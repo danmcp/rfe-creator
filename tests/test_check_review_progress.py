@@ -685,3 +685,114 @@ class TestLegacyMode:
         assert code is None or code == 0
         assert "COMPLETED=1/2" in out
         assert "Re-run" not in out
+
+
+# ── Initiative phases ──
+
+
+class TestInitiativePhases:
+    def test_initiative_fetch_pending(self, tmp_path):
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-fetch": lambda id: str(tmp_path / f"{id}.md")},
+        ):
+            assert check_id("initiative-fetch", "INIT-001") == "pending"
+
+    def test_initiative_fetch_completed(self, tmp_path):
+        (tmp_path / "INIT-001.md").write_text("content")
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-fetch": lambda id: str(tmp_path / f"{id}.md")},
+        ):
+            assert check_id("initiative-fetch", "INIT-001") == "completed"
+
+    def test_initiative_review_pending(self, tmp_path):
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-review": lambda id: str(tmp_path / f"{id}-review.md")},
+        ):
+            assert check_id("initiative-review", "INIT-001") == "pending"
+
+    def test_initiative_review_completed(self, tmp_path):
+        (tmp_path / "INIT-001-review.md").write_text("---\nscore: 7\n---\nBody\n")
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-review": lambda id: str(tmp_path / f"{id}-review.md")},
+        ):
+            assert check_id("initiative-review", "INIT-001") == "completed"
+
+    def test_initiative_split_pending(self, tmp_path):
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-split": lambda id: str(tmp_path / f"{id}-split-status.yaml")},
+        ):
+            assert check_id("initiative-split", "INIT-001") == "pending"
+
+    def test_initiative_split_completed(self, tmp_path):
+        (tmp_path / "INIT-001-split-status.yaml").write_text("status: done\n")
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-split": lambda id: str(tmp_path / f"{id}-split-status.yaml")},
+        ):
+            assert check_id("initiative-split", "INIT-001") == "completed"
+
+    def test_initiative_revise_pending(self, tmp_path):
+        """Initiative-revise: review exists but not yet revised → pending."""
+        (tmp_path / "INIT-001-review.md").write_text(
+            "---\nscore: 4\nrecommendation: revise\n---\nBody\n"
+        )
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-revise": lambda id: str(tmp_path / f"{id}-review.md")},
+        ):
+            assert check_id("initiative-revise", "INIT-001") == "pending"
+
+    def test_initiative_revise_completed(self, tmp_path):
+        """Initiative-revise: auto_revised=true → completed."""
+        (tmp_path / "INIT-001-review.md").write_text(
+            "---\nauto_revised: true\nscore: 7\n---\nBody\n"
+        )
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-revise": lambda id: str(tmp_path / f"{id}-review.md")},
+        ):
+            assert check_id("initiative-revise", "INIT-001") == "completed"
+
+    def test_initiative_revise_split_completed(self, tmp_path):
+        """Initiative-revise: recommendation=split → completed (can't fix)."""
+        (tmp_path / "INIT-001-review.md").write_text("---\nrecommendation: split\n---\nBody\n")
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-revise": lambda id: str(tmp_path / f"{id}-review.md")},
+        ):
+            assert check_id("initiative-revise", "INIT-001") == "completed"
+
+    def test_initiative_revise_missing_file(self, tmp_path):
+        """Initiative-revise: no review file → pending."""
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-revise": lambda id: str(tmp_path / f"{id}-review.md")},
+        ):
+            assert check_id("initiative-revise", "INIT-001") == "pending"
+
+    def test_initiative_review_score_missing(self, tmp_path):
+        """Initiative-review: file without score → pending (not silent completed)."""
+        (tmp_path / "INIT-001-review.md").write_text("---\ntitle: test\n---\nBody\n")
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-review": lambda id: str(tmp_path / f"{id}-review.md")},
+        ):
+            assert check_id("initiative-review", "INIT-001") == "pending"
+
+    def test_check_phase_initiative_review(self, tmp_path):
+        (tmp_path / "INIT-001-review.md").write_text("---\nscore: 8\n---\nBody\n")
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-review": lambda id: str(tmp_path / f"{id}-review.md")},
+        ):
+            completed, errors, pending, total, next_poll = _check_phase(
+                "initiative-review", ["INIT-001", "INIT-002"], fast=False
+            )
+            assert completed == 1
+            assert pending == 1
+            assert total == 2

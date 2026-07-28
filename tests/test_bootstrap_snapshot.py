@@ -18,7 +18,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 SCRIPT = os.path.join(os.path.dirname(__file__), "..", "scripts", "bootstrap_snapshot.py")
 
 from bootstrap_snapshot import (  # noqa: E402
+    BOOTSTRAP_CONFIG,
     _description_at_time,
+    _load_run_report,
     _parse_adf,
     find_latest_run_timestamp,
 )
@@ -1001,3 +1003,95 @@ class TestBootstrapIntegration:
             snap = yaml.safe_load(f)
 
         assert len(snap["issues"]) == 2
+
+
+class TestLoadRunReportConfig:
+    """Verify _load_run_report uses config for report path and item key."""
+
+    def test_rfe_default(self, tmp_path):
+        """Default (rfe) config reads per_rfe from <run_name>.yaml."""
+        results = str(tmp_path / "results")
+        run_name = "20260401-120000"
+        report_dir = os.path.join(results, run_name, "auto-fix-runs")
+        os.makedirs(report_dir)
+        report = {"per_rfe": [{"id": "RHAIRFE-1"}, {"id": "RHAIRFE-2"}]}
+        with open(os.path.join(report_dir, f"{run_name}.yaml"), "w") as f:
+            yaml.dump(report, f)
+
+        ids, _ = _load_run_report(results, run_name)
+        assert ids == {"RHAIRFE-1", "RHAIRFE-2"}
+
+    def test_initiative_config(self, tmp_path):
+        """Initiative config reads per_initiative from initiative-run-<name>.yaml."""
+        results = str(tmp_path / "results")
+        run_name = "20260401-120000"
+        report_dir = os.path.join(results, run_name, "auto-fix-runs")
+        os.makedirs(report_dir)
+        report = {"per_initiative": [{"id": "RHOAIENG-1"}, {"id": "RHOAIENG-2"}]}
+        with open(os.path.join(report_dir, f"initiative-run-{run_name}.yaml"), "w") as f:
+            yaml.dump(report, f)
+
+        config = BOOTSTRAP_CONFIG["initiative"]
+        ids, _ = _load_run_report(results, run_name, config=config)
+        assert ids == {"RHOAIENG-1", "RHOAIENG-2"}
+
+    def test_initiative_config_no_rfe_report(self, tmp_path):
+        """Initiative config doesn't find RFE-format report."""
+        results = str(tmp_path / "results")
+        run_name = "20260401-120000"
+        report_dir = os.path.join(results, run_name, "auto-fix-runs")
+        os.makedirs(report_dir)
+        report = {"per_rfe": [{"id": "RHAIRFE-1"}]}
+        with open(os.path.join(report_dir, f"{run_name}.yaml"), "w") as f:
+            yaml.dump(report, f)
+
+        config = BOOTSTRAP_CONFIG["initiative"]
+        ids, _ = _load_run_report(results, run_name, config=config)
+        assert ids is None
+
+
+class TestBootstrapInitiativeType:
+    """Verify --type initiative produces initiative-prefixed snapshots."""
+
+    def test_initiative_snapshot_filename(self, tmp_path, mock_jira):
+        url, server = mock_jira
+        server.issues = {"RHOAIENG-1": "Initiative description."}
+        results = str(tmp_path / "results")
+        run_name = "20260401-120000"
+        os.makedirs(os.path.join(results, run_name))
+        os.symlink(run_name, os.path.join(results, "latest"))
+
+        art_dir = str(tmp_path / "artifacts")
+        os.makedirs(art_dir)
+
+        env = {
+            **os.environ,
+            "JIRA_SERVER": url,
+            "JIRA_USER": "test@example.com",
+            "JIRA_TOKEN": "test-token",
+        }
+        r = subprocess.run(
+            [
+                sys.executable,
+                SCRIPT,
+                "--results-dir",
+                results,
+                "--artifacts-dir",
+                art_dir,
+                "--type",
+                "initiative",
+                "project = RHOAIENG",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert r.returncode == 0, r.stderr
+        assert "initiative-creator-ignore" in r.stderr
+
+        snapshot_dir = os.path.join(art_dir, "auto-fix-runs")
+        snap_files = os.listdir(snapshot_dir)
+        init_snaps = [f for f in snap_files if f.startswith("initiative-snapshot-")]
+        rfe_snaps = [f for f in snap_files if f.startswith("issue-snapshot-")]
+        assert len(init_snaps) == 1
+        assert len(rfe_snaps) == 0

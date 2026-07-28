@@ -8,14 +8,21 @@ if [ -n "${RFE_SKIP_BOOTSTRAP:-}" ]; then
 fi
 
 CONTEXT_DIR=".context/assess-rfe"
+ASSESS_REPO="${ASSESS_RFE_REPO:-https://github.com/opendatahub-io/assess-rfe}"
 # Scripts now live under each skill dir (assess-rfe moved them out of the repo
 # root in opendatahub-io/assess-rfe#5 "move-scripts-to-skill-dirs").
 RUBRIC_FILE="$CONTEXT_DIR/skills/assess-rfe/scripts/agent_prompt.md"
 
 if [ ! -d "$CONTEXT_DIR" ]; then
-  git clone https://github.com/opendatahub-io/assess-rfe "$CONTEXT_DIR" 2>&1
+  git clone "$ASSESS_REPO" "$CONTEXT_DIR" 2>&1
 else
   git -C "$CONTEXT_DIR" pull --ff-only 2>&1 || echo "WARN: assess-rfe pull failed, using cached version" >&2
+fi
+
+# Checkout a specific branch/tag if requested
+if [ -n "${ASSESS_RFE_REF:-}" ]; then
+  git -C "$CONTEXT_DIR" fetch origin "$ASSESS_RFE_REF" 2>&1
+  git -C "$CONTEXT_DIR" checkout FETCH_HEAD 2>&1
 fi
 
 # Validate that the rubric file exists after cloning

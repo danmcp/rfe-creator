@@ -15,17 +15,31 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from artifact_utils import read_frontmatter
 
+_TYPE_CONFIG = {
+    "rfe": {"reviews_dir": "artifacts/rfe-reviews"},
+    "initiative": {"reviews_dir": "artifacts/initiative-reviews"},
+}
+
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: check_right_sized.py ID1 [ID2 ...]", file=sys.stderr)
+    pipeline_type = "rfe"
+    args = sys.argv[1:]
+    if "--type" in args:
+        idx = args.index("--type")
+        if idx + 1 < len(args):
+            pipeline_type = args[idx + 1]
+            args = args[:idx] + args[idx + 2 :]
+
+    if not args:
+        print("Usage: check_right_sized.py [--type rfe|initiative] ID1 [ID2 ...]", file=sys.stderr)
         sys.exit(1)
 
-    ids = sys.argv[1:]
+    reviews_dir = _TYPE_CONFIG[pipeline_type]["reviews_dir"]
+    ids = args
     undersized = []
 
     for rfe_id in ids:
-        review_path = f"artifacts/rfe-reviews/{rfe_id}-review.md"
+        review_path = f"{reviews_dir}/{rfe_id}-review.md"
         if not os.path.exists(review_path):
             continue
         try:

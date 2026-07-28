@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate an HTML review report from RFE review artifacts."""
+"""Generate an HTML review report from review artifacts."""
 
 import os
 import re
@@ -10,7 +10,97 @@ from collections import Counter
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from artifact_utils import find_artifact_file_including_archived, read_frontmatter
+from artifact_utils import find_task_file_including_archived, read_frontmatter
+
+REPORT_CONFIG = {
+    "rfe": {
+        "reviews_dir": "rfe-reviews",
+        "tasks_dir": "rfe-tasks",
+        "originals_dir": "rfe-originals",
+        "id_field": "rfe_id",
+        "jira_prefix": "RHAIRFE-",
+        "local_prefix": "RFE-",
+        "entity_name": "RFE",
+        "entity_name_plural": "RFEs",
+        "report_title": "RFE Review &amp; Remediation Report",
+        "default_output": "review-report.html",
+        "pass_threshold": 7,
+        "criterion_keys": ["what", "why", "open_to_how", "not_a_task", "right_sized"],
+        "criterion_labels": {
+            "what": "WHAT",
+            "why": "WHY",
+            "open_to_how": "HOW",
+            "not_a_task": "Not-a-task",
+            "right_sized": "Right-sized",
+        },
+        "criterion_short_labels": {
+            "what": "WHAT",
+            "why": "WHY",
+            "open_to_how": "HOW",
+            "not_a_task": "Task",
+            "right_sized": "Scope",
+        },
+        "before_score_name_map": {
+            "WHY": "why",
+            "WHAT": "what",
+            "HOW": "open_to_how",
+            "Open to HOW": "open_to_how",
+            "Not-a-task": "not_a_task",
+            "Not a task": "not_a_task",
+            "Right-sized": "right_sized",
+            "Right-sizing": "right_sized",
+            "NAT": "not_a_task",
+            "RS": "right_sized",
+        },
+        "extra_fields": [],
+    },
+    "initiative": {
+        "reviews_dir": "initiative-reviews",
+        "tasks_dir": "initiatives",
+        "originals_dir": "initiative-originals",
+        "id_field": "initiative_id",
+        "jira_prefix": "RHOAIENG-",
+        "local_prefix": "INIT-",
+        "entity_name": "Initiative",
+        "entity_name_plural": "Initiatives",
+        "report_title": "Initiative Review &amp; Remediation Report",
+        "default_output": "initiative-review-report.html",
+        "pass_threshold": 7,
+        "criterion_keys": [
+            "objective",
+            "problem_statement",
+            "scope",
+            "success_criteria",
+            "timeline_dependencies",
+        ],
+        "criterion_labels": {
+            "objective": "Objective",
+            "problem_statement": "Problem Statement",
+            "scope": "Scope",
+            "success_criteria": "Success Criteria",
+            "timeline_dependencies": "Timeline & Deps",
+        },
+        "criterion_short_labels": {
+            "objective": "Obj",
+            "problem_statement": "Problem",
+            "scope": "Scope",
+            "success_criteria": "Criteria",
+            "timeline_dependencies": "Timeline",
+        },
+        "before_score_name_map": {
+            "Objective": "objective",
+            "Problem Statement": "problem_statement",
+            "Problem": "problem_statement",
+            "Scope": "scope",
+            "Success Criteria": "success_criteria",
+            "Criteria": "success_criteria",
+            "Timeline & Deps": "timeline_dependencies",
+            "Timeline": "timeline_dependencies",
+            "Dependencies": "timeline_dependencies",
+        },
+        "extra_fields": ["alignment"],
+    },
+}
 
 DEFAULT_ARTIFACTS = os.path.join(os.getcwd(), "artifacts")
 
@@ -21,21 +111,11 @@ def get_revision_history(body):
     return m.group(1).strip() if m else ""
 
 
-def parse_before_scores(revision_history, after_scores):
+def parse_before_scores(revision_history, after_scores, name_map=None):
     """Reconstruct before scores from revision history annotations like WHY (0->1)."""
     before = dict(after_scores)
-    name_map = {
-        "WHY": "why",
-        "WHAT": "what",
-        "HOW": "open_to_how",
-        "Open to HOW": "open_to_how",
-        "Not-a-task": "not_a_task",
-        "Not a task": "not_a_task",
-        "Right-sized": "right_sized",
-        "Right-sizing": "right_sized",
-        "NAT": "not_a_task",
-        "RS": "right_sized",
-    }
+    if name_map is None:
+        name_map = REPORT_CONFIG["rfe"]["before_score_name_map"]
     for match in re.finditer(r"(\w[\w\s-]*?)\s*\((\d+)(?:→|->)+(\d+)\)", revision_history):
         name = match.group(1).strip()
         before_val = int(match.group(2))
@@ -55,7 +135,7 @@ def read_removed_context(rfe_id, tasks_dir):
 
 
 def generate_diff(rfe_id, tasks_dir, originals_dir):
-    """Generate unified diff between original and revised RFE."""
+    """Generate unified diff between original and revised content."""
     orig = os.path.join(originals_dir, f"{rfe_id}.md")
     revised = os.path.join(tasks_dir, f"{rfe_id}.md")
     if not os.path.exists(orig) or not os.path.exists(revised):
@@ -169,7 +249,7 @@ def main():
     parser.add_argument(
         "--revised-only",
         action="store_true",
-        help="Only include detail pages for revised RFEs (summary table still shows all)",
+        help="Only include detail pages for revised items (summary table still shows all)",
     )
     parser.add_argument(
         "--output",
@@ -183,12 +263,25 @@ def main():
         default=None,
         help="Artifacts directory (default: ../artifacts relative to script)",
     )
+    parser.add_argument(
+        "--type",
+        choices=["rfe", "initiative"],
+        default="rfe",
+        help="Issue type (default: rfe)",
+    )
     args = parser.parse_args()
 
+    config = REPORT_CONFIG[args.type]
+    entity = config["entity_name"]
+    entities = config["entity_name_plural"]
+    pass_threshold = config["pass_threshold"]
+    criterion_keys = config["criterion_keys"]
+    criterion_short_labels = config["criterion_short_labels"]
+
     artifacts_dir = args.artifacts_dir or DEFAULT_ARTIFACTS
-    reviews_dir = os.path.join(artifacts_dir, "rfe-reviews")
-    tasks_dir = os.path.join(artifacts_dir, "rfe-tasks")
-    originals_dir = os.path.join(artifacts_dir, "rfe-originals")
+    reviews_dir = os.path.join(artifacts_dir, config["reviews_dir"])
+    tasks_dir = os.path.join(artifacts_dir, config["tasks_dir"])
+    originals_dir = os.path.join(artifacts_dir, config["originals_dir"])
 
     jira_server = os.environ.get("JIRA_SERVER", "").rstrip("/")
 
@@ -199,7 +292,13 @@ def main():
         rfe_id = rf.replace("-review.md", "")
         review_fm, review_body = read_frontmatter(os.path.join(reviews_dir, rf))
 
-        task_path = find_artifact_file_including_archived(os.path.dirname(tasks_dir), rfe_id)
+        task_path = find_task_file_including_archived(
+            artifacts_dir,
+            rfe_id,
+            config["tasks_dir"],
+            config["jira_prefix"],
+            config["local_prefix"],
+        )
         task_fm = {}
         if task_path and os.path.exists(task_path):
             task_fm, _ = read_frontmatter(task_path)
@@ -213,7 +312,9 @@ def main():
         if fm_before_scores:
             before_scores = fm_before_scores
         else:
-            before_scores = parse_before_scores(revision_history, after_scores)
+            before_scores = parse_before_scores(
+                revision_history, after_scores, config["before_score_name_map"]
+            )
 
         fm_before_score = review_fm.get("before_score")
         before_total = (
@@ -221,7 +322,7 @@ def main():
         )
         after_total = review_fm.get("score", sum(after_scores.values()))
 
-        before_pass = before_total >= 7 and all(v > 0 for v in before_scores.values())
+        before_pass = before_total >= pass_threshold and all(v > 0 for v in before_scores.values())
         after_pass = review_fm.get("pass", False)
 
         diff_text = generate_diff(rfe_id, tasks_dir, originals_dir)
@@ -252,6 +353,7 @@ def main():
                 "needs_attention": review_fm.get("needs_attention", False),
                 "needs_attention_reason": review_fm.get("needs_attention_reason", ""),
                 "recommendation": review_fm.get("recommendation", ""),
+                "alignment": review_fm.get("alignment", ""),
                 "error": error,
                 "diff_text": diff_text,
                 "removed_context": removed_context,
@@ -377,15 +479,8 @@ def main():
         if b.get("type") == "reworded"
     )
 
-    # Per-criterion score distributions for existing RFEs
-    criterion_keys = ["what", "why", "open_to_how", "not_a_task", "right_sized"]
-    criterion_labels_map = {
-        "what": "WHAT",
-        "why": "WHY",
-        "open_to_how": "HOW",
-        "not_a_task": "Task",
-        "right_sized": "Scope",
-    }
+    # Per-criterion score distributions for existing items
+    criterion_labels_map = criterion_short_labels
     ex_no_errors = [r for r in existing if not r.get("error")]
     criterion_dist = {}
     for key in criterion_keys:
@@ -1080,9 +1175,9 @@ def main():
     }
 """
 
-    subtitle_parts = [f"{len(existing)} existing RFEs assessed and auto-revised"]
+    subtitle_parts = [f"{len(existing)} existing {entities} assessed and auto-revised"]
     if split_parents:
-        split_desc = f"{len(split_parents)} split into {sp_total_children} new RFEs"
+        split_desc = f"{len(split_parents)} split into {sp_total_children} new {entities}"
         if sp_refused_count:
             split_desc += f" ({sp_refused_count} refused)"
         subtitle_parts.append(split_desc)
@@ -1100,10 +1195,10 @@ def main():
 <body>
 
     <div class="page summary-page">
-        <h1>RFE Review &amp; Remediation Report</h1>
+        <h1>{config["report_title"]}</h1>
         <p class="subtitle">{", ".join(subtitle_parts)}</p>
 
-        <h3><a href="#section-existing" class="jira-link">Existing RFEs</a></h3>
+        <h3><a href="#section-existing" class="jira-link">Existing {entities}</a></h3>
         <div class="summary-stats">
             <div class="stat-box">
                 <div class="stat-value">{ex_before_passing}/{ex_scored}</div>
@@ -1152,7 +1247,7 @@ def main():
     # Auto-revision callout
     if ex_revised_count:
         html += f'''        <div class="callout">
-            <strong>Auto-revision:</strong> {ex_revised_count} of {ex_scored} existing RFEs revised, avg score improvement <span class="{"score-up" if ex_revised_avg_delta > 0 else "score-same"}">{ex_revised_avg_delta:+.1f}</span>
+            <strong>Auto-revision:</strong> {ex_revised_count} of {ex_scored} existing {entities} revised, avg score improvement <span class="{"score-up" if ex_revised_avg_delta > 0 else "score-same"}">{ex_revised_avg_delta:+.1f}</span>
         </div>
 '''
 
@@ -1169,7 +1264,7 @@ def main():
             <div class="analysis-tile">
                 <div class="criterion-heading">Score Distribution by Criterion</div>
                 <div class="chart-container">
-                    <div class="chart-y-label">% of RFEs</div>
+                    <div class="chart-y-label">% of {entities}</div>
                     <div class="criterion-area" style="height:{crit_area_height}pt;margin-left:24pt;">
                         <div class="criterion-grid">
 """
@@ -1299,15 +1394,29 @@ def main():
             return '<span style="color:#b8860b;font-weight:600;">Indeterminate</span>'
         return "&mdash;"
 
+    def alignment_text(a):
+        if a == "strong":
+            return '<span style="color:#2d6a2d;">Strong</span>'
+        if a == "partial":
+            return '<span style="color:#b8860b;">Partial</span>'
+        if a == "weak":
+            return '<span style="color:#c0392b;font-weight:600;">Weak</span>'
+        if a == "not_assessed":
+            return '<span style="color:#888;">Not Assessed</span>'
+        return "&mdash;"
+
+    has_alignment = "alignment" in config["extra_fields"]
+    jira_prefix = config["jira_prefix"]
+
     def jira_link(rfe_id):
-        """Wrap an RFE ID in a Jira link if it's a real key and server is configured."""
-        if jira_server and rfe_id.startswith("RHAIRFE-"):
+        """Wrap an ID in a Jira link if it's a real key and server is configured."""
+        if jira_server and rfe_id.startswith(jira_prefix):
             return f'<a href="{jira_server}/browse/{html_escape(rfe_id)}" target="_blank" class="jira-link" title="Open in Jira">{html_escape(rfe_id)} &#x1F517;</a>'
         return html_escape(rfe_id)
 
     def jira_ext(rfe_id):
         """Small external link icon for Jira keys in summary table."""
-        if jira_server and rfe_id.startswith("RHAIRFE-"):
+        if jira_server and rfe_id.startswith(jira_prefix):
             return f' <a href="{jira_server}/browse/{html_escape(rfe_id)}" target="_blank" style="color:#0f3460;text-decoration:none;font-size:9pt;" title="Open in Jira">&#x1F517;</a>'
         return ""
 
@@ -1430,10 +1539,10 @@ def main():
 """
         return rows
 
-    table_header = """        <table class="summary-table">
+    table_header = f"""        <table class="summary-table">
             <thead>
                 <tr>
-                    <th>RFE</th>
+                    <th>{entity}</th>
                     <th>Before</th>
                     <th></th>
                     <th>After</th>
@@ -1446,32 +1555,34 @@ def main():
             <tbody>
 """
 
-    # --- Existing RFEs table ---
+    # --- Existing items table ---
     if existing:
         ex_collapsed = " collapsed" if len(existing) > 10 else ""
         html += f'        <div class="table-wrapper{ex_collapsed}">\n'
         html += table_header
-        html += f"""        <tr id="section-existing"><td colspan="8" style="background:#e8eaf6;font-weight:700;font-size:9pt;padding:6pt 8pt;color:#0f3460;">Existing RFEs ({len(existing)})</td></tr>
+        html += f"""        <tr id="section-existing"><td colspan="8" style="background:#e8eaf6;font-weight:700;font-size:9pt;padding:6pt 8pt;color:#0f3460;">Existing {entities} ({len(existing)})</td></tr>
 """
         html += render_table_rows(existing)
         html += "            </tbody>\n        </table>\n"
         if len(existing) > 10:
             html += '        <div class="table-fade"></div>\n'
-            html += f'        <button class="table-see-all" onclick="toggleTable(this)">See all {len(existing)} RFEs</button>\n'
+            html += f'        <button class="table-see-all" onclick="toggleTable(this)">See all {len(existing)} {entities}</button>\n'
         html += "        </div>\n"
 
-    # --- Split RFEs heading + stat boxes ---
+    # --- Split items heading + stat boxes ---
     if split_parents:
-        html += f"""        <h3><a href="#section-splits" class="jira-link">Split RFEs</a></h3>
+        html += f"""        <h3><a href="#section-splits" class="jira-link">Split {
+            entities
+        }</a></h3>
         <div class="summary-stats">
             <div class="stat-box">
                 <div class="stat-value">{len(split_parents)}</div>
-                <div class="stat-label">RFEs Split</div>
+                <div class="stat-label">{entities} Split</div>
             </div>
             <div class="stat-arrow">&rarr;</div>
             <div class="stat-box">
                 <div class="stat-value">{sp_total_children}</div>
-                <div class="stat-label">New RFEs Created</div>
+                <div class="stat-label">New {entities} Created</div>
             </div>
             <div class="stat-box">
                 <div class="stat-value">{sc_passing}/{sc_scored}</div>
@@ -1501,7 +1612,7 @@ def main():
         </div>
 """
 
-    # --- Split RFEs table ---
+    # --- Split items table ---
     split_row_count = len(split_parents) + len(intermediaries) + len(leaf_children)
     if split_row_count:
         sp_collapsed = " collapsed" if split_row_count > 10 else ""
@@ -1510,7 +1621,9 @@ def main():
 
         if split_parents:
             sp_error_count = sum(1 for r in split_parents if r.get("error"))
-            sp_header = f"Split RFEs ({len(split_parents)} &rarr; {sp_total_children} children"
+            sp_header = (
+                f"Split {entities} ({len(split_parents)} &rarr; {sp_total_children} children"
+            )
             if sp_error_count:
                 sp_header += f", {sp_error_count} refused"
             sp_header += ")"
@@ -1561,28 +1674,22 @@ def main():
 """
 
         if leaf_children:
-            html += f"""        <tr><td colspan="8" style="background:#e8f5e9;font-weight:700;font-size:9pt;padding:6pt 8pt;color:#2e7d32;">New RFEs from Splits ({len(leaf_children)})</td></tr>
+            html += f"""        <tr><td colspan="8" style="background:#e8f5e9;font-weight:700;font-size:9pt;padding:6pt 8pt;color:#2e7d32;">New {entities} from Splits ({len(leaf_children)})</td></tr>
 """
             html += render_table_rows(leaf_children)
 
         html += "            </tbody>\n        </table>\n"
         if split_row_count > 10:
             html += '        <div class="table-fade"></div>\n'
-            html += f'        <button class="table-see-all" onclick="toggleTable(this)">See all {split_row_count} RFEs</button>\n'
+            html += f'        <button class="table-see-all" onclick="toggleTable(this)">See all {split_row_count} {entities}</button>\n'
         html += "        </div>\n"
 
     # Build revision summary bullets dynamically
     summary_bullets = []
 
-    # Summarize per-criterion changes (existing RFEs only — splits have no meaningful "before")
-    criterion_labels = {
-        "what": "WHAT",
-        "why": "WHY",
-        "open_to_how": "HOW",
-        "not_a_task": "Not-a-task",
-        "right_sized": "Right-sized",
-    }
-    for key, label in criterion_labels.items():
+    # Summarize per-criterion changes (existing items only — splits have no meaningful "before")
+    criterion_full_labels = config["criterion_labels"]
+    for key, label in criterion_full_labels.items():
         improved = [
             r for r in existing if r["before_scores"].get(key, 0) < r["after_scores"].get(key, 0)
         ]
@@ -1593,24 +1700,24 @@ def main():
             ids = ", ".join(r["rfe_id"] for r in improved)
             if len(improved) == ex_scored:
                 summary_bullets.append(
-                    f"<li><strong>{label}:</strong> All {ex_scored} existing RFEs improved ({improved[0]['before_scores'].get(key, 0)}&rarr;{improved[0]['after_scores'].get(key, 0)}).</li>"
+                    f"<li><strong>{label}:</strong> All {ex_scored} existing {entities} improved ({improved[0]['before_scores'].get(key, 0)}&rarr;{improved[0]['after_scores'].get(key, 0)}).</li>"
                 )
             else:
                 summary_bullets.append(
-                    f"<li><strong>{label} improved:</strong> {len(improved)} RFE{'s' if len(improved) != 1 else ''} ({ids}).</li>"
+                    f"<li><strong>{label} improved:</strong> {len(improved)} {entity}{'s' if len(improved) != 1 else ''} ({ids}).</li>"
                 )
         if degraded:
             ids = ", ".join(r["rfe_id"] for r in degraded)
             summary_bullets.append(
-                f"<li><strong>{label} degraded:</strong> {len(degraded)} RFE{'s' if len(degraded) != 1 else ''} ({ids}).</li>"
+                f"<li><strong>{label} degraded:</strong> {len(degraded)} {entity}{'s' if len(degraded) != 1 else ''} ({ids}).</li>"
             )
 
-    # Remaining gaps — criteria still below max (existing RFEs only)
-    for key, label in criterion_labels.items():
+    # Remaining gaps — criteria still below max (existing items only)
+    for key, label in criterion_full_labels.items():
         below_max = [r for r in existing if r["after_scores"].get(key, 0) < 2]
         if below_max:
             summary_bullets.append(
-                f"<li><strong>{label} gap:</strong> {len(below_max)} RFE{'s' if len(below_max) != 1 else ''} still below 2/2 (requires author input).</li>"
+                f"<li><strong>{label} gap:</strong> {len(below_max)} {entity}{'s' if len(below_max) != 1 else ''} still below 2/2 (requires author input).</li>"
             )
 
     if removed_count:
@@ -1621,7 +1728,7 @@ def main():
             else ""
         )
         summary_bullets.append(
-            f"<li><strong>Removed context:</strong> {removed_count} RFE{'s' if removed_count != 1 else ''} had content removed during revision ({total_blocks} block{'s' if total_blocks != 1 else ''} total: {reworded_blocks} reworded, {genuine_blocks} genuine implementation context preserved for strategy reference).{heading_detail}</li>"
+            f"<li><strong>Removed context:</strong> {removed_count} {entity}{'s' if removed_count != 1 else ''} had content removed during revision ({total_blocks} block{'s' if total_blocks != 1 else ''} total: {reworded_blocks} reworded, {genuine_blocks} genuine implementation context preserved for strategy reference).{heading_detail}</li>"
         )
 
     html += """
@@ -1637,13 +1744,7 @@ def main():
 
 """
 
-    criteria = [
-        ("WHAT", "what"),
-        ("WHY", "why"),
-        ("Open to HOW", "open_to_how"),
-        ("Not a task", "not_a_task"),
-        ("Right-sized", "right_sized"),
-    ]
+    criteria = [(label, key) for key, label in criterion_full_labels.items()]
 
     # Errored split parents get detail pages (to show refusal banner + tree),
     # but other errored RFEs are excluded since there's no useful detail to show.
@@ -1692,7 +1793,7 @@ def main():
         <div class="page">
             <h1 id="{r["rfe_id"]}">{jira_link(r["rfe_id"])}</h1>
             <h2>{html_escape(r["title"])}</h2>
-            <p style="margin:0 0 10pt 0;font-size:9pt;">{'Split from: <a href="#' + r["parent_key"] + '">' + html_escape(r["parent_key"]) + "</a> &nbsp;|&nbsp; " if r.get("parent_key") else ""}Technical Feasibility: {feasibility_text(r.get("feasibility", ""))}</p>
+            <p style="margin:0 0 10pt 0;font-size:9pt;">{'Split from: <a href="#' + r["parent_key"] + '">' + html_escape(r["parent_key"]) + "</a> &nbsp;|&nbsp; " if r.get("parent_key") else ""}Technical Feasibility: {feasibility_text(r.get("feasibility", ""))}{" &nbsp;|&nbsp; Alignment: " + alignment_text(r.get("alignment", "")) if has_alignment and r.get("alignment") else ""}</p>
 '''
         if r.get("parent_refused"):
             # Find the refused ancestor by walking up the tree
@@ -1714,10 +1815,10 @@ def main():
             </div>
 """
         elif r.get("is_intermediary"):
-            html += """
+            html += f"""
             <div style="background:#fff8e1;border:2px solid #f57f17;border-radius:6pt;padding:10pt 14pt;margin-bottom:14pt;">
                 <div style="font-size:10pt;font-weight:700;color:#f57f17;">Superseded &mdash; Re-split into children below</div>
-                <div style="font-size:9pt;color:#8b6914;margin-top:4pt;">This RFE was not submitted to Jira. It was further decomposed and its children were submitted instead.</div>
+                <div style="font-size:9pt;color:#8b6914;margin-top:4pt;">This {entity} was not submitted to Jira. It was further decomposed and its children were submitted instead.</div>
             </div>
 """
         if (
@@ -1804,12 +1905,12 @@ def main():
             html += render_tree(tree_root["rfe_id"], highlight_id=highlight_id)
             html += "            </div>\n"
 
-            html += """
+            html += f"""
             <h3>Children</h3>
             <table class="summary-table">
                 <thead>
                     <tr>
-                        <th>RFE</th>
+                        <th>{entity}</th>
                         <th>Title</th>
                         <th>Score</th>
                         <th></th>
@@ -1971,13 +2072,13 @@ function toggleTable(el) {
 </html>
 """
 
-    output_path = args.output or os.path.join(artifacts_dir, "review-report.html")
+    output_path = args.output or os.path.join(artifacts_dir, config["default_output"])
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w") as f:
         f.write(html)
     print(f"Report written to {output_path}")
     print(
-        f"{n} RFEs ({len(existing)} existing, {len(split_parents)} split parents, {len(leaf_children)} leaf children, {len(intermediaries)} intermediaries)"
+        f"{n} {entities} ({len(existing)} existing, {len(split_parents)} split parents, {len(leaf_children)} leaf children, {len(intermediaries)} intermediaries)"
     )
     if ex_scored:
         print(
@@ -1985,12 +2086,12 @@ function toggleTable(el) {
         )
     if split_parents:
         print(
-            f"Splits: {len(split_parents)} RFEs split into {sp_total_children} children, {sc_passing}/{sc_scored} children passing, avg {sc_avg:.1f}"
+            f"Splits: {len(split_parents)} {entities} split into {sp_total_children} children, {sc_passing}/{sc_scored} children passing, avg {sc_avg:.1f}"
         )
     if error_count:
         print(f"{error_count} error{'s' if error_count != 1 else ''}")
     if removed_count:
-        print(f"{removed_count} RFEs with removed context ({total_blocks} blocks)")
+        print(f"{removed_count} {entities} with removed context ({total_blocks} blocks)")
 
 
 if __name__ == "__main__":

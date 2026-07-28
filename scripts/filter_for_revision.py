@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Filter RFE IDs to those needing revision, rejecting score regressions.
+"""Filter IDs to those needing revision, rejecting score regressions.
+
+Supports both RFE IDs (RHAIRFE-*, RFE-*) and Initiative IDs (RHOAIENG-*, INIT-*).
 
 For each ID:
 - If score < before_score: sets recommendation=autorevise_reject (revision made it worse)
@@ -22,6 +24,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from artifact_utils import read_frontmatter_validated, update_frontmatter
 
 
+def _review_path_and_schema(item_id):
+    if item_id.startswith("INIT-") or item_id.startswith("RHOAIENG-"):
+        return f"artifacts/initiative-reviews/{item_id}-review.md", "initiative-review"
+    return f"artifacts/rfe-reviews/{item_id}-review.md", "rfe-review"
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: filter_for_revision.py ID1 [ID2 ...]", file=sys.stderr)
@@ -31,9 +39,9 @@ def main():
     revise_ids = []
 
     for rfe_id in ids:
-        review_path = f"artifacts/rfe-reviews/{rfe_id}-review.md"
+        review_path, schema = _review_path_and_schema(rfe_id)
         try:
-            data, _ = read_frontmatter_validated(review_path, "rfe-review")
+            data, _ = read_frontmatter_validated(review_path, schema)
         except Exception as e:
             print(f"Warning: cannot read review for {rfe_id}: {e}", file=sys.stderr)
             continue
@@ -46,7 +54,7 @@ def main():
 
         # Check for score regression
         if before_score is not None and score < before_score:
-            update_frontmatter(review_path, {"recommendation": "autorevise_reject"}, "rfe-review")
+            update_frontmatter(review_path, {"recommendation": "autorevise_reject"}, schema)
             print(
                 f"{rfe_id}: score regressed ({before_score} -> {score}), setting autorevise_reject",
                 file=sys.stderr,

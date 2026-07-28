@@ -13,87 +13,101 @@ from artifact_utils import read_frontmatter, resolve_ids
 ARTIFACTS_DIR = os.path.join(os.getcwd(), "artifacts")
 
 
-def collect_default(ids):
+def _review_dir(entry_type):
+    """Return the review directory for the given type."""
+    subdir = "initiative-reviews" if entry_type == "initiative" else "rfe-reviews"
+    return os.path.join(ARTIFACTS_DIR, subdir)
+
+
+def collect_default(ids, entry_type="rfe"):
     """Group IDs by recommendation field."""
     groups = {"SUBMIT": [], "SPLIT": [], "REVISE": [], "REJECT": [], "ERRORS": []}
-    for rfe_id in ids:
-        path = os.path.join(ARTIFACTS_DIR, "rfe-reviews", f"{rfe_id}-review.md")
+    review_dir = _review_dir(entry_type)
+    for item_id in ids:
+        path = os.path.join(review_dir, f"{item_id}-review.md")
         if not os.path.exists(path):
-            groups["ERRORS"].append(rfe_id)
+            groups["ERRORS"].append(item_id)
             continue
         data, _ = read_frontmatter(path)
         if data.get("error"):
-            groups["ERRORS"].append(rfe_id)
+            groups["ERRORS"].append(item_id)
             continue
         rec = data.get("recommendation", "").upper()
         if rec == "AUTOREVISE_REJECT":
             rec = "REJECT"
         if rec in groups:
-            groups[rec].append(rfe_id)
+            groups[rec].append(item_id)
         else:
-            groups["ERRORS"].append(rfe_id)
+            groups["ERRORS"].append(item_id)
     for key, vals in groups.items():
         print(f"{key}={','.join(vals)}")
 
 
-def collect_reassess(ids):
+def collect_reassess(ids, entry_type="rfe"):
     """Collect IDs needing reassessment (auto_revised=true, pass=false)."""
     reassess, done = [], []
-    for rfe_id in ids:
-        path = os.path.join(ARTIFACTS_DIR, "rfe-reviews", f"{rfe_id}-review.md")
+    review_dir = _review_dir(entry_type)
+    for item_id in ids:
+        path = os.path.join(review_dir, f"{item_id}-review.md")
         if not os.path.exists(path):
-            done.append(rfe_id)
+            done.append(item_id)
             continue
         data, _ = read_frontmatter(path)
         if data.get("auto_revised") and not data.get("pass"):
-            reassess.append(rfe_id)
+            reassess.append(item_id)
         else:
-            done.append(rfe_id)
+            done.append(item_id)
     print(f"REASSESS={','.join(reassess)}")
     print(f"DONE={','.join(done)}")
 
 
-def collect_errors(ids):
+def collect_errors(ids, entry_type="rfe"):
     """Collect IDs with non-null error field or missing review files."""
     error_ids = []
-    for rfe_id in ids:
-        path = os.path.join(ARTIFACTS_DIR, "rfe-reviews", f"{rfe_id}-review.md")
+    review_dir = _review_dir(entry_type)
+    for item_id in ids:
+        path = os.path.join(review_dir, f"{item_id}-review.md")
         if not os.path.exists(path):
-            # Missing review file is an error — the pipeline failed to produce output
-            error_ids.append(rfe_id)
+            error_ids.append(item_id)
             continue
         try:
             data, _ = read_frontmatter(path)
         except (OSError, UnicodeError, yaml.YAMLError):
-            error_ids.append(rfe_id)
+            error_ids.append(item_id)
             continue
         if data.get("error"):
-            error_ids.append(rfe_id)
+            error_ids.append(item_id)
     print(f"ERRORS={','.join(error_ids)}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Group RFE IDs by review recommendation.")
-    parser.add_argument("ids", nargs="*", help="RFE IDs to check")
+    parser = argparse.ArgumentParser(description="Group IDs by review recommendation.")
+    parser.add_argument("ids", nargs="*", help="IDs to check")
     parser.add_argument(
-        "--ids-file", help="Read RFE IDs from a file (one per line) instead of positional args"
+        "--ids-file", help="Read IDs from a file (one per line) instead of positional args"
     )
     parser.add_argument(
         "--reassess", action="store_true", help="Collect re-assess candidates instead"
     )
     parser.add_argument("--errors", action="store_true", help="Collect IDs with error field set")
+    parser.add_argument(
+        "--type",
+        choices=["rfe", "initiative"],
+        default="rfe",
+        help="Entry type (default: rfe)",
+    )
     args = parser.parse_args()
 
     ids = resolve_ids(args.ids, args.ids_file)
     if not ids:
-        parser.error("no RFE IDs provided (pass positionally or via --ids-file)")
+        parser.error("no IDs provided (pass positionally or via --ids-file)")
 
     if args.errors:
-        collect_errors(ids)
+        collect_errors(ids, entry_type=args.type)
     elif args.reassess:
-        collect_reassess(ids)
+        collect_reassess(ids, entry_type=args.type)
     else:
-        collect_default(ids)
+        collect_default(ids, entry_type=args.type)
 
 
 if __name__ == "__main__":

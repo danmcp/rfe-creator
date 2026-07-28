@@ -22,6 +22,13 @@ PHASE_CHECKS = {
     "review": lambda id: f"artifacts/rfe-reviews/{id}-review.md",
     "revise": lambda id: f"artifacts/rfe-reviews/{id}-review.md",
     "split": lambda id: f"artifacts/rfe-reviews/{id}-split-status.yaml",
+    "initiative-split": lambda id: f"artifacts/initiative-reviews/{id}-split-status.yaml",
+    "initiative-fetch": lambda id: f"artifacts/initiatives/{id}.md",
+    "initiative-assess": lambda id: f"tmp/rfe-assess/single/{id}.result.md",
+    "initiative-feasibility": lambda id: f"artifacts/initiative-reviews/{id}-feasibility.md",
+    "initiative-review": lambda id: f"artifacts/initiative-reviews/{id}-review.md",
+    "initiative-revise": lambda id: f"artifacts/initiative-reviews/{id}-review.md",
+    "initiative-alignment": lambda id: f"artifacts/initiative-reviews/{id}-alignment.md",
 }
 
 
@@ -30,7 +37,7 @@ def check_id(phase, rfe_id):
     path = PHASE_CHECKS[phase](rfe_id)
     if not os.path.exists(path):
         return "pending"
-    if phase == "review":
+    if phase in ("review", "initiative-review"):
         try:
             data, _ = read_frontmatter(path)
         except Exception:
@@ -41,7 +48,7 @@ def check_id(phase, rfe_id):
             return "pending"
         if data.get("error"):
             return "error"
-    if phase == "revise":
+    if phase in ("revise", "initiative-revise"):
         try:
             data, _ = read_frontmatter(path)
         except Exception:
@@ -108,6 +115,9 @@ def _detect_fast(explicit_flag):
         "tmp/split-config.yaml",
         "tmp/autofix-config.yaml",
         "tmp/speedrun-config.yaml",
+        "tmp/initiative-review-config.yaml",
+        "tmp/initiative-split-config.yaml",
+        "tmp/initiative-autofix-config.yaml",
     ):
         if os.path.exists(cfg):
             try:

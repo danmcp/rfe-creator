@@ -23,6 +23,7 @@ Output:
 
 import argparse
 import os
+import re
 import sys
 
 import yaml
@@ -32,18 +33,22 @@ from artifact_utils import SCHEMAS
 
 ALLOWED_PRIORITIES = SCHEMAS["rfe-task"]["priority"]["enum"]
 
+PARENT_KEY_PATTERN = re.compile(r"^(RHAISTRAT-\d+|RHOAIENG-\d+)$")
+
 # Keep in sync with the batch YAML format documented in
 # .claude/skills/rfe.speedrun/SKILL.md (Mode A). Since the skill runs this
 # validator with --strict, a field missing here becomes a blocking warning
 # for anyone who adds a new batch field without updating both places.
-KNOWN_FIELDS = {"prompt", "priority", "labels", "clarifying_context"}
+RFE_KNOWN_FIELDS = {"prompt", "priority", "labels", "clarifying_context"}
+INITIATIVE_KNOWN_FIELDS = {"prompt", "priority", "labels", "clarifying_context", "parent_key"}
 
 
-def validate_entries(entries):
+def validate_entries(entries, entry_type="rfe"):
     """Validate a list of batch entries. Returns (errors, warnings) lists of strings."""
     if not entries:
         return ["batch input must contain at least one entry"], []
 
+    known_fields = INITIATIVE_KNOWN_FIELDS if entry_type == "initiative" else RFE_KNOWN_FIELDS
     errors = []
     warnings = []
     seen_prompts = {}
@@ -75,7 +80,12 @@ def validate_entries(entries):
         if "clarifying_context" in entry and not isinstance(entry["clarifying_context"], str):
             errors.append(f"entry {i}: 'clarifying_context' must be a string")
 
-        unknown = set(entry) - KNOWN_FIELDS
+        if "parent_key" in entry:
+            pk = entry["parent_key"]
+            if not isinstance(pk, str) or not PARENT_KEY_PATTERN.match(pk):
+                errors.append(f"entry {i}: 'parent_key' must match RHAISTRAT-NNN or RHOAIENG-NNN")
+
+        unknown = set(entry) - known_fields
         for field in sorted(unknown):
             warnings.append(f"entry {i}: unknown field '{field}'")
 
@@ -94,6 +104,12 @@ def main():
     parser.add_argument("path", help="Path to the batch YAML input file")
     parser.add_argument(
         "--strict", action="store_true", help="Treat warnings as errors (nonzero exit)"
+    )
+    parser.add_argument(
+        "--type",
+        choices=["rfe", "initiative"],
+        default="rfe",
+        help="Entry type to validate (default: rfe)",
     )
     args = parser.parse_args()
 
@@ -115,7 +131,7 @@ def main():
         print(f"ERROR: batch input root must be a list, got {type(data).__name__}", file=sys.stderr)
         sys.exit(2)
 
-    errors, warnings = validate_entries(data)
+    errors, warnings = validate_entries(data, entry_type=args.type)
 
     print(f"ERROR_COUNT={len(errors)}")
     print(f"WARNING_COUNT={len(warnings)}")

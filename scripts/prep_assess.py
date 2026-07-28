@@ -16,7 +16,14 @@ import os
 import sys
 
 SINGLE_DIR = "tmp/rfe-assess/single"
-TASK_DIR = os.path.join("artifacts", "rfe-tasks")
+RFE_TASK_DIR = os.path.join("artifacts", "rfe-tasks")
+INITIATIVE_TASK_DIR = os.path.join("artifacts", "initiatives")
+
+
+def _task_dir_for(issue_id):
+    if issue_id.startswith("RHOAIENG-") or issue_id.startswith("INIT-"):
+        return INITIATIVE_TASK_DIR
+    return RFE_TASK_DIR
 
 
 def main():
@@ -39,7 +46,7 @@ def main():
 
     # Copy task file — validate it has substantive content to avoid
     # scoring empty/incomplete files during creation race conditions
-    src = os.path.join(TASK_DIR, f"{rfe_id}.md")
+    src = os.path.join(_task_dir_for(rfe_id), f"{rfe_id}.md")
     if not os.path.isfile(src):
         print(f"ERROR: Task file not found: {src}", file=sys.stderr)
         sys.exit(1)

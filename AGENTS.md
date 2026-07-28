@@ -1,6 +1,6 @@
 # RFE Creator
 
-Skills for creating, reviewing, and submitting RFEs to the RHAIRFE Jira project.
+Skills for creating, reviewing, and submitting RFEs to the RHAIRFE Jira project and Initiatives to the RHOAIENG Jira project.
 
 ## Artifact Conventions
 
@@ -25,6 +25,17 @@ artifacts/
     RHAIRFE-1595-review.md
     RFE-001-review.md
 
+  initiatives/              # Individual Initiative files with YAML frontmatter
+    INIT-001.md              # New Initiative (pre-submission, renamed on submit)
+    RHOAIENG-12345.md        # Existing Jira Initiative (keyed by Jira key)
+
+  initiative-originals/     # Raw Jira descriptions at time of fetch
+    RHOAIENG-12345.md        # Baseline for conflict detection
+
+  initiative-reviews/       # Per-Initiative review files with YAML frontmatter
+    INIT-001-review.md
+    RHOAIENG-12345-review.md
+
 ```
 
 ### Frontmatter
@@ -35,6 +46,8 @@ All task and review files use YAML frontmatter for structured metadata. Skills m
 # Get schema for a file type
 python3 scripts/frontmatter.py schema rfe-task
 python3 scripts/frontmatter.py schema rfe-review
+python3 scripts/frontmatter.py schema initiative-task
+python3 scripts/frontmatter.py schema initiative-review
 
 # Set/update frontmatter on a file
 python3 scripts/frontmatter.py set <path> field=value field=value ...
@@ -61,7 +74,7 @@ python3 scripts/state.py timestamp                    # Print current UTC time (
 python3 scripts/state.py clean                        # Reset tmp/ directory
 ```
 
-Each skill uses distinct file prefixes to avoid collisions during nested calls: `autofix-`, `review-`, `split-`, `speedrun-`.
+Each skill uses distinct file prefixes to avoid collisions during nested calls: `autofix-`, `review-`, `split-`, `speedrun-`, `initiative-review-`.
 
 ### File Naming
 
@@ -70,6 +83,7 @@ Each skill uses distinct file prefixes to avoid collisions during nested calls: 
 - **On submit**: `RFE-NNN.md` files are renamed to `RHAIRFE-NNNN.md`, and `rfe_id` is updated to the Jira key
 - **Companion files**: Same prefix as main file with `-comments.md` or `-removed-context.md` suffix
 - **Archived RFEs**: Set `status: Archived` in frontmatter (no filename changes)
+- **Initiatives**: Use `INIT-NNN.md` naming with `initiative_id: INIT-NNN`; renamed to `RHOAIENG-NNNN.md` on submit
 
 ## Jira Integration
 
@@ -98,11 +112,19 @@ Skills that only work with local artifacts (`/rfe.create`) do not require Jira a
 
 ## Jira Field Mappings
 
-### RHAIRFE Project
+### RHAIRFE Project (RFEs)
 - **Project**: `RHAIRFE`
 - **Issue Type**: `Feature Request`
 - **Priority values** (use these exactly): Blocker, Critical, Major, Normal, Minor, Undefined
 - **Status on creation**: `New`
+
+### RHOAIENG Project (Initiatives)
+- **Project**: `RHOAIENG`
+- **Issue Type**: `Initiative` (id: 10103)
+- **Priority values** (use these exactly): Blocker, Critical, Major, Normal, Minor, Undefined
+- **Status on creation**: `New`
+- **Parent field**: Set to a RHAISTRAT Outcome key to link the Initiative to a strategic outcome
+- **Submission script**: `scripts/submit.py --type initiative`
 
 ## Snapshot System
 

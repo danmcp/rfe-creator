@@ -119,7 +119,10 @@ class TestSplitSummaryAdf:
             ("RFE-001", "First child", "Major", "/fake/path1"),
             ("RFE-002", "Second child", "Major", "/fake/path2"),
         ]
-        adf = build_split_summary_adf("https://jira.example.com", children, state, 2)
+        from split_submit import SPLIT_CONFIG
+
+        rfe_config = SPLIT_CONFIG["rfe"]
+        adf = build_split_summary_adf("https://jira.example.com", children, state, 2, rfe_config)
 
         # Top-level structure
         assert adf["type"] == "doc"
@@ -141,10 +144,13 @@ class TestSplitSummaryAdf:
 
     def test_strips_trailing_slash(self):
         """Trailing slash on server URL does not produce double slash."""
+        from split_submit import SPLIT_CONFIG
+
+        rfe_config = SPLIT_CONFIG["rfe"]
         state = SubmissionState()
         state.phase2_done = {1: "RHAIRFE-100"}
         children = [("RFE-001", "Child", "Major", "/fake/path")]
-        adf = build_split_summary_adf("https://jira.example.com/", children, state, 1)
+        adf = build_split_summary_adf("https://jira.example.com/", children, state, 1, rfe_config)
 
         item = adf["content"][1]["content"][0]
         url = item["content"][0]["content"][0]["attrs"]["url"]

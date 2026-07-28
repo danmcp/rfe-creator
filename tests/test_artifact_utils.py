@@ -299,3 +299,102 @@ class TestUpdateFrontmatter:
         write_frontmatter("review.md", VALID_REVIEW_FM.copy(), "rfe-review")
         with pytest.raises(ValidationError):
             update_frontmatter("review.md", {"recommendation": "invalid"}, "rfe-review")
+
+
+# ── Initiative schemas ───────────────────────────────────────────────────────
+
+VALID_INITIATIVE_REVIEW_FM = {
+    "initiative_id": "INIT-001",
+    "score": 7,
+    "pass": True,
+    "recommendation": "submit",
+    "feasibility": "feasible",
+    "auto_revised": False,
+    "needs_attention": False,
+    "scores": {
+        "what": 2,
+        "why": 1,
+        "scope": 2,
+        "open_to_how": 1,
+        "right_sized": 1,
+    },
+}
+
+VALID_INITIATIVE_TASK_FM = {
+    "initiative_id": "INIT-001",
+    "title": "Test Initiative",
+    "priority": "Major",
+    "status": "Ready",
+}
+
+
+class TestInitiativeSchemas:
+    def test_initiative_review_schema_exists(self):
+        assert "initiative-review" in SCHEMAS
+
+    def test_initiative_task_schema_exists(self):
+        assert "initiative-task" in SCHEMAS
+
+    def test_initiative_review_has_alignment(self):
+        assert "alignment" in SCHEMAS["initiative-review"]
+
+    def test_initiative_review_score_fields(self):
+        fields = SCHEMAS["initiative-review"]["scores"]["fields"]
+        assert "what" in fields
+        assert "why" in fields
+        assert "scope" in fields
+        assert "open_to_how" in fields
+        assert "right_sized" in fields
+
+    def test_initiative_task_has_initiative_id(self):
+        assert "initiative_id" in SCHEMAS["initiative-task"]
+
+    def test_initiative_task_no_size_field(self):
+        assert "size" not in SCHEMAS["initiative-task"]
+
+
+class TestInitiativeValidate:
+    def test_valid_initiative_review(self):
+        errors = validate(VALID_INITIATIVE_REVIEW_FM, "initiative-review")
+        assert errors == []
+
+    def test_valid_initiative_task(self):
+        errors = validate(VALID_INITIATIVE_TASK_FM, "initiative-task")
+        assert errors == []
+
+    def test_initiative_review_rejects_rfe_id(self):
+        data = {**VALID_INITIATIVE_REVIEW_FM, "initiative_id": "RHAIRFE-1234"}
+        errors = validate(data, "initiative-review")
+        assert any("initiative_id" in e for e in errors)
+
+    def test_initiative_task_accepts_rhoaieng_id(self):
+        data = {**VALID_INITIATIVE_TASK_FM, "initiative_id": "RHOAIENG-5000"}
+        errors = validate(data, "initiative-task")
+        assert errors == []
+
+    def test_initiative_task_parent_key(self):
+        data = {**VALID_INITIATIVE_TASK_FM, "parent_key": "RHAISTRAT-100"}
+        errors = validate(data, "initiative-task")
+        assert errors == []
+
+
+class TestInitiativeFrontmatter:
+    def test_write_and_read_initiative_review(self, tmp_dir):
+        write_frontmatter("init-review.md", VALID_INITIATIVE_REVIEW_FM.copy(), "initiative-review")
+        assert os.path.exists("init-review.md")
+        data, _ = read_frontmatter("init-review.md")
+        assert data["initiative_id"] == "INIT-001"
+        assert data["scores"]["what"] == 2
+
+    def test_write_and_read_initiative_task(self, tmp_dir):
+        write_frontmatter("init-task.md", VALID_INITIATIVE_TASK_FM.copy(), "initiative-task")
+        data, _ = read_frontmatter("init-task.md")
+        assert data["initiative_id"] == "INIT-001"
+        assert data["title"] == "Test Initiative"
+
+    def test_update_initiative_review(self, tmp_dir):
+        write_frontmatter("init-review.md", VALID_INITIATIVE_REVIEW_FM.copy(), "initiative-review")
+        update_frontmatter("init-review.md", {"auto_revised": True}, "initiative-review")
+        data, _ = read_frontmatter("init-review.md")
+        assert data["auto_revised"] is True
+        assert data["initiative_id"] == "INIT-001"

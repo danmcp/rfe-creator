@@ -44,10 +44,25 @@ def check_pair(original_path, task_path):
     return original.strip() != task.strip()
 
 
-def batch_mode(ids, artifacts_dir="artifacts"):
+_TYPE_CONFIG = {
+    "rfe": {
+        "originals_dir": "rfe-originals",
+        "tasks_dir": "rfe-tasks",
+        "review_schema": "rfe-review",
+    },
+    "initiative": {
+        "originals_dir": "initiative-originals",
+        "tasks_dir": "initiatives",
+        "review_schema": "initiative-review",
+    },
+}
+
+
+def batch_mode(ids, artifacts_dir="artifacts", pipeline_type="rfe"):
     """Compare originals to tasks and set auto_revised in review frontmatter."""
-    originals_dir = os.path.join(artifacts_dir, "rfe-originals")
-    tasks_dir = os.path.join(artifacts_dir, "rfe-tasks")
+    tc = _TYPE_CONFIG[pipeline_type]
+    originals_dir = os.path.join(artifacts_dir, tc["originals_dir"])
+    tasks_dir = os.path.join(artifacts_dir, tc["tasks_dir"])
 
     # If no IDs given, discover from originals dir
     if not ids:
@@ -68,7 +83,7 @@ def batch_mode(ids, artifacts_dir="artifacts"):
         data, _ = read_frontmatter(review)
         current = data.get("auto_revised", False)
         if revised != current:
-            update_frontmatter(review, {"auto_revised": revised}, "rfe-review")
+            update_frontmatter(review, {"auto_revised": revised}, tc["review_schema"])
             changed += 1
             print(f"{rfe_id}: auto_revised {current} -> {revised}")
         else:
@@ -105,20 +120,28 @@ def _extract_ids_file(argv):
 
 
 def main():
-    if "--batch" in sys.argv:
-        rest, file_ids = _extract_ids_file(sys.argv[1:])
+    pipeline_type = "rfe"
+    argv = sys.argv[1:]
+    if "--type" in argv:
+        idx = argv.index("--type")
+        if idx + 1 < len(argv):
+            pipeline_type = argv[idx + 1]
+            argv = argv[:idx] + argv[idx + 2 :]
+
+    if "--batch" in argv:
+        rest, file_ids = _extract_ids_file(argv)
         args = [a for a in rest if a != "--batch"]
-        batch_mode(args + file_ids)
+        batch_mode(args + file_ids, pipeline_type=pipeline_type)
         return
 
-    if len(sys.argv) != 3:
-        print("Usage: check_revised.py <original> <task>", file=sys.stderr)
-        print("       check_revised.py --batch [ID ...]", file=sys.stderr)
+    if len(argv) != 2:
+        print("Usage: check_revised.py [--type rfe|initiative] <original> <task>", file=sys.stderr)
+        print("       check_revised.py [--type rfe|initiative] --batch [ID ...]", file=sys.stderr)
         sys.exit(2)
 
-    revised = check_pair(sys.argv[1], sys.argv[2])
+    revised = check_pair(argv[0], argv[1])
     if revised is None:
-        missing = sys.argv[1] if not os.path.exists(sys.argv[1]) else sys.argv[2]
+        missing = argv[0] if not os.path.exists(argv[0]) else argv[1]
         print(f"FILE_MISSING={missing}")
         sys.exit(1)
     if revised:

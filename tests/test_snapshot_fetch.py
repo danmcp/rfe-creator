@@ -12,9 +12,11 @@ import yaml
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 from snapshot_fetch import (
+    SNAPSHOT_CONFIG,
     cmd_fetch,
     compute_content_hash,
     diff_snapshots,
+    find_previous_snapshot,
     load_snapshot_from_dir,
     read_id_file,
     update_snapshot_hashes,
@@ -517,7 +519,12 @@ class TestReprocess:
         import argparse
 
         args = argparse.Namespace(
-            reprocess=True, jql=None, random=None, ids_file=ids_file, changed_file=changed_file
+            reprocess=True,
+            jql=None,
+            random=None,
+            type="rfe",
+            ids_file=ids_file,
+            changed_file=changed_file,
         )
         cmd_fetch(args)
 
@@ -531,7 +538,12 @@ class TestReprocess:
         import argparse
 
         args = argparse.Namespace(
-            reprocess=True, jql=None, random=None, ids_file=ids_file, changed_file=changed_file
+            reprocess=True,
+            jql=None,
+            random=None,
+            type="rfe",
+            ids_file=ids_file,
+            changed_file=changed_file,
         )
         with pytest.raises(SystemExit) as exc_info:
             cmd_fetch(args)
@@ -546,7 +558,12 @@ class TestReprocess:
         import argparse
 
         args = argparse.Namespace(
-            reprocess=True, jql=None, random=None, ids_file=ids_file, changed_file=changed_file
+            reprocess=True,
+            jql=None,
+            random=None,
+            type="rfe",
+            ids_file=ids_file,
+            changed_file=changed_file,
         )
         cmd_fetch(args)
 
@@ -570,7 +587,7 @@ class TestRandom:
 
         monkeypatch.setattr("snapshot_fetch.require_env", lambda: ("http://x", "u", "t"))
         monkeypatch.setattr("snapshot_fetch.fetch_all_issues", lambda *a, **kw: current)
-        monkeypatch.setattr("snapshot_fetch.find_previous_snapshot", lambda: (None, None))
+        monkeypatch.setattr("snapshot_fetch.find_previous_snapshot", lambda **kw: (None, None))
         monkeypatch.setattr("snapshot_fetch.SNAPSHOT_DIR", snap_dir)
 
         args = argparse.Namespace(
@@ -579,6 +596,7 @@ class TestRandom:
             random=random_n,
             limit=None,
             data_dir=None,
+            type="rfe",
             ids_file=ids_file,
             changed_file=changed_file,
         )
@@ -647,7 +665,7 @@ class TestUnchangedSkippedFromSelection:
         monkeypatch.setattr("snapshot_fetch.fetch_all_issues", lambda *a, **kw: current)
         monkeypatch.setattr(
             "snapshot_fetch.find_previous_snapshot",
-            lambda data_dir=None: (
+            lambda **kw: (
                 str(tmp_path / "auto-fix-runs" / "issue-snapshot-20260501-000000.yaml"),
                 {"issues": prev_issues},
             ),
@@ -660,6 +678,7 @@ class TestUnchangedSkippedFromSelection:
             random=None,
             limit=limit,
             data_dir=None,
+            type="rfe",
             ids_file=ids_file,
             changed_file=changed_file,
         )
@@ -737,3 +756,173 @@ class TestUnchangedSkippedFromSelection:
         }
         ids, _ = self._run_fetch(tmp_path, current, prev_issues, monkeypatch)
         assert ids == []
+
+
+class TestSnapshotConfig:
+    """Verify SNAPSHOT_CONFIG is defined for both types."""
+
+    def test_rfe_config(self):
+        assert SNAPSHOT_CONFIG["rfe"]["ignore_label"] == "rfe-creator-ignore"
+        assert SNAPSHOT_CONFIG["rfe"]["snapshot_prefix"] == "issue-snapshot-"
+
+    def test_initiative_config(self):
+        assert SNAPSHOT_CONFIG["initiative"]["ignore_label"] == "initiative-creator-ignore"
+        assert SNAPSHOT_CONFIG["initiative"]["snapshot_prefix"] == "initiative-snapshot-"
+
+
+class TestFindPreviousSnapshotPrefix:
+    """Verify prefix parameter scopes find_previous_snapshot correctly."""
+
+    def _seed(self, tmp_path, prefix, issues):
+        snap_dir = str(tmp_path / "snapshots")
+        os.makedirs(snap_dir, exist_ok=True)
+        snap = {
+            "query_timestamp": "2026-04-01T00:00:00Z",
+            "timestamp": "2026-04-01T00:00:01Z",
+            "issues": issues,
+        }
+        path = os.path.join(snap_dir, f"{prefix}20260401-000000.yaml")
+        with open(path, "w") as f:
+            yaml.dump(snap, f, default_flow_style=False, sort_keys=False)
+        return snap_dir
+
+    def test_default_prefix_finds_rfe_snapshot(self, tmp_path):
+        snap_dir = self._seed(tmp_path, "issue-snapshot-", {"K1": "aaa"})
+        path, data = find_previous_snapshot(snapshot_dir=snap_dir)
+        assert data is not None
+        assert "K1" in data["issues"]
+
+    def test_initiative_prefix_finds_initiative_snapshot(self, tmp_path):
+        snap_dir = self._seed(tmp_path, "initiative-snapshot-", {"K1": "bbb"})
+        path, data = find_previous_snapshot(snapshot_dir=snap_dir, prefix="initiative-snapshot-")
+        assert data is not None
+        assert data["issues"]["K1"] == "bbb"
+
+    def test_prefix_isolates_types(self, tmp_path):
+        """RFE prefix doesn't find initiative snapshots and vice versa."""
+        snap_dir = self._seed(tmp_path, "issue-snapshot-", {"RFE": "aaa"})
+        # Also create an initiative snapshot in the same dir
+        snap = {
+            "query_timestamp": "2026-04-01T00:00:00Z",
+            "timestamp": "2026-04-01T00:00:01Z",
+            "issues": {"INIT": "bbb"},
+        }
+        path = os.path.join(snap_dir, "initiative-snapshot-20260401-000000.yaml")
+        with open(path, "w") as f:
+            yaml.dump(snap, f)
+
+        # Default prefix finds only the RFE snapshot
+        _, rfe_data = find_previous_snapshot(snapshot_dir=snap_dir)
+        assert "RFE" in rfe_data["issues"]
+        assert "INIT" not in rfe_data["issues"]
+
+        # Initiative prefix finds only the initiative snapshot
+        _, init_data = find_previous_snapshot(snapshot_dir=snap_dir, prefix="initiative-snapshot-")
+        assert "INIT" in init_data["issues"]
+        assert "RFE" not in init_data["issues"]
+
+    def test_no_matching_prefix_returns_none(self, tmp_path):
+        snap_dir = self._seed(tmp_path, "issue-snapshot-", {"K1": "aaa"})
+        path, data = find_previous_snapshot(snapshot_dir=snap_dir, prefix="initiative-snapshot-")
+        assert path is None
+        assert data is None
+
+
+class TestUpdateSnapshotHashesPrefix:
+    """Verify prefix parameter scopes update_snapshot_hashes correctly."""
+
+    def _seed(self, tmp_path, prefix, issues):
+        snap_dir = str(tmp_path / "snapshots")
+        os.makedirs(snap_dir, exist_ok=True)
+        snap = {
+            "query_timestamp": "2026-04-01T00:00:00Z",
+            "timestamp": "2026-04-01T00:00:01Z",
+            "issues": issues,
+        }
+        path = os.path.join(snap_dir, f"{prefix}20260401-000000.yaml")
+        with open(path, "w") as f:
+            yaml.dump(snap, f, default_flow_style=False, sort_keys=False)
+        return snap_dir, path
+
+    def test_initiative_prefix_updates_initiative_snapshot(self, tmp_path):
+        snap_dir, path = self._seed(tmp_path, "initiative-snapshot-", {"K1": "old"})
+        result = update_snapshot_hashes({"K1": "new"}, snap_dir, prefix="initiative-snapshot-")
+        assert result is not None
+        with open(path) as f:
+            data = yaml.safe_load(f)
+        assert data["issues"]["K1"] == {"hash": "new", "processed": True}
+
+    def test_initiative_prefix_ignores_rfe_snapshot(self, tmp_path):
+        """update with initiative prefix doesn't touch RFE snapshots."""
+        snap_dir, rfe_path = self._seed(tmp_path, "issue-snapshot-", {"K1": "rfe"})
+        result = update_snapshot_hashes({"K1": "new"}, snap_dir, prefix="initiative-snapshot-")
+        assert result is None
+        with open(rfe_path) as f:
+            data = yaml.safe_load(f)
+        assert data["issues"]["K1"] == "rfe"  # untouched
+
+
+class TestCmdFetchInitiativeType:
+    """Verify --type initiative uses the right config."""
+
+    def _run_fetch(self, tmp_path, current, monkeypatch, issue_type="initiative"):
+        import argparse
+
+        snap_dir = str(tmp_path / "auto-fix-runs")
+        os.makedirs(snap_dir, exist_ok=True)
+        ids_file = str(tmp_path / "all-ids.txt")
+        changed_file = str(tmp_path / "changed-ids.txt")
+
+        captured_jql = {}
+
+        def mock_fetch_all(server, user, token, jql):
+            captured_jql["jql"] = jql
+            return current
+
+        monkeypatch.setattr("snapshot_fetch.require_env", lambda: ("http://x", "u", "t"))
+        monkeypatch.setattr("snapshot_fetch.fetch_all_issues", mock_fetch_all)
+        monkeypatch.setattr("snapshot_fetch.find_previous_snapshot", lambda **kw: (None, None))
+        monkeypatch.setattr("snapshot_fetch.SNAPSHOT_DIR", snap_dir)
+
+        args = argparse.Namespace(
+            reprocess=False,
+            jql="project = RHOAIENG",
+            random=None,
+            limit=None,
+            data_dir=None,
+            type=issue_type,
+            ids_file=ids_file,
+            changed_file=changed_file,
+        )
+        cmd_fetch(args)
+        return captured_jql, ids_file, snap_dir
+
+    def test_initiative_uses_initiative_ignore_label(self, tmp_path, monkeypatch):
+        current = {"RHOAIENG-1": {"content_hash": "aaa", "labels": []}}
+        captured, _, _ = self._run_fetch(tmp_path, current, monkeypatch)
+        assert "initiative-creator-ignore" in captured["jql"]
+        assert "rfe-creator-ignore" not in captured["jql"]
+
+    def test_initiative_writes_initiative_snapshot_file(self, tmp_path, monkeypatch):
+        current = {"RHOAIENG-1": {"content_hash": "aaa", "labels": []}}
+        _, _, snap_dir = self._run_fetch(tmp_path, current, monkeypatch)
+        snap_files = os.listdir(snap_dir)
+        initiative_snaps = [f for f in snap_files if f.startswith("initiative-snapshot-")]
+        rfe_snaps = [f for f in snap_files if f.startswith("issue-snapshot-")]
+        assert len(initiative_snaps) == 1
+        assert len(rfe_snaps) == 0
+
+    def test_rfe_uses_rfe_ignore_label(self, tmp_path, monkeypatch):
+        current = {"RHAIRFE-1": {"content_hash": "aaa", "labels": []}}
+        captured, _, _ = self._run_fetch(tmp_path, current, monkeypatch, issue_type="rfe")
+        assert "rfe-creator-ignore" in captured["jql"]
+        assert "initiative-creator-ignore" not in captured["jql"]
+
+    def test_rfe_writes_issue_snapshot_file(self, tmp_path, monkeypatch):
+        current = {"RHAIRFE-1": {"content_hash": "aaa", "labels": []}}
+        _, _, snap_dir = self._run_fetch(tmp_path, current, monkeypatch, issue_type="rfe")
+        snap_files = os.listdir(snap_dir)
+        rfe_snaps = [f for f in snap_files if f.startswith("issue-snapshot-")]
+        initiative_snaps = [f for f in snap_files if f.startswith("initiative-snapshot-")]
+        assert len(rfe_snaps) == 1
+        assert len(initiative_snaps) == 0

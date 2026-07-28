@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Allocate the next available RFE-NNN ID(s) atomically.
+"""Allocate the next available ID(s) atomically.
 
-Uses a lock file to prevent concurrent split agents from picking
-the same IDs.
+Uses a lock file to prevent concurrent agents from picking the same IDs.
 
 Usage:
     python3 scripts/next_rfe_id.py 3
@@ -10,26 +9,31 @@ Usage:
     # RFE-013
     # RFE-014
 
+    python3 scripts/next_rfe_id.py --prefix INIT --dir artifacts/initiatives 2
+    # INIT-001
+    # INIT-002
+
     python3 scripts/next_rfe_id.py --from-batch batch.yaml
     # allocates one ID per entry in the YAML batch file (avoids N=$(...) in skills)
 """
 
+import argparse
 import fcntl
 import glob
 import os
 import re
 import sys
 
-TASKS_DIR = "artifacts/rfe-tasks"
-LOCK_FILE = "artifacts/.rfe-id-lock"
+DEFAULT_PREFIX = "RFE"
+DEFAULT_DIR = "artifacts/rfe-tasks"
 
 
-def get_highest_rfe_number():
-    """Scan artifacts/rfe-tasks/ for the highest RFE-NNN number."""
+def get_highest_number(tasks_dir, prefix):
+    """Scan tasks_dir for the highest PREFIX-NNN number."""
     highest = 0
-    for path in glob.glob(os.path.join(TASKS_DIR, "RFE-*.md")):
+    for path in glob.glob(os.path.join(tasks_dir, f"{prefix}-*.md")):
         basename = os.path.basename(path)
-        match = re.match(r"RFE-(\d+)", basename)
+        match = re.match(rf"{re.escape(prefix)}-(\d+)", basename)
         if match:
             num = int(match.group(1))
             if num > highest:
@@ -50,33 +54,43 @@ def count_batch_entries(path):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: next_rfe_id.py <count> | --from-batch <batch.yaml>", file=sys.stderr)
-        sys.exit(2)
+    parser = argparse.ArgumentParser(description="Allocate the next available ID(s) atomically.")
+    parser.add_argument("count", nargs="?", type=int, help="Number of IDs to allocate")
+    parser.add_argument("--from-batch", metavar="FILE", help="YAML batch file (one ID per entry)")
+    parser.add_argument(
+        "--prefix", default=DEFAULT_PREFIX, help=f"ID prefix (default: {DEFAULT_PREFIX})"
+    )
+    parser.add_argument(
+        "--dir", default=DEFAULT_DIR, help=f"Tasks directory (default: {DEFAULT_DIR})"
+    )
+    args = parser.parse_args()
 
-    if sys.argv[1] == "--from-batch":
-        if len(sys.argv) < 3:
-            print("Usage: next_rfe_id.py --from-batch <batch.yaml>", file=sys.stderr)
-            sys.exit(2)
-        count = count_batch_entries(sys.argv[2])
+    if args.from_batch:
+        count = count_batch_entries(args.from_batch)
+    elif args.count is not None:
+        count = args.count
     else:
-        count = int(sys.argv[1])
+        parser.error("either count or --from-batch is required")
+
     if count < 1:
         print("Count must be >= 1", file=sys.stderr)
         sys.exit(2)
 
-    os.makedirs(TASKS_DIR, exist_ok=True)
+    tasks_dir = args.dir
+    prefix = args.prefix
+    lock_file = os.path.join(tasks_dir, ".id-lock")
 
-    lock_fd = open(LOCK_FILE, "w")
+    os.makedirs(tasks_dir, exist_ok=True)
+
+    lock_fd = open(lock_file, "w")
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        highest = get_highest_rfe_number()
+        highest = get_highest_number(tasks_dir, prefix)
         for i in range(count):
-            rfe_id = f"RFE-{highest + 1 + i:03d}"
-            # Touch a placeholder so subsequent calls see it
-            placeholder = os.path.join(TASKS_DIR, f"{rfe_id}.md")
+            new_id = f"{prefix}-{highest + 1 + i:03d}"
+            placeholder = os.path.join(tasks_dir, f"{new_id}.md")
             open(placeholder, "a").close()
-            print(rfe_id)
+            print(new_id)
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         lock_fd.close()

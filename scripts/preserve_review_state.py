@@ -16,15 +16,25 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from artifact_utils import read_frontmatter, update_frontmatter
 
-REVIEWS_DIR = "artifacts/rfe-reviews"
+
+def _is_initiative(item_id):
+    return item_id.startswith("INIT-") or item_id.startswith("RHOAIENG-")
 
 
-def state_path(rfe_id):
-    return os.path.join(REVIEWS_DIR, f"{rfe_id}-review-state.json")
+def _reviews_dir(item_id):
+    return "artifacts/initiative-reviews" if _is_initiative(item_id) else "artifacts/rfe-reviews"
 
 
-def review_path(rfe_id):
-    return os.path.join(REVIEWS_DIR, f"{rfe_id}-review.md")
+def _schema(item_id):
+    return "initiative-review" if _is_initiative(item_id) else "rfe-review"
+
+
+def state_path(item_id):
+    return os.path.join(_reviews_dir(item_id), f"{item_id}-review-state.json")
+
+
+def review_path(item_id):
+    return os.path.join(_reviews_dir(item_id), f"{item_id}-review.md")
 
 
 def extract_revision_history(filepath):
@@ -96,7 +106,7 @@ def restore(rfe_id):
     if state.get("before_scores"):
         fm_updates["before_scores"] = state["before_scores"]
     if fm_updates:
-        update_frontmatter(rpath, fm_updates, "rfe-review")
+        update_frontmatter(rpath, fm_updates, _schema(rfe_id))
 
     # Restore revision history
     saved_history = state.get("revision_history", "").strip()

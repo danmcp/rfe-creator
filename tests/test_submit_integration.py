@@ -1277,3 +1277,179 @@ class TestApprovedTransition:
 
         issue = jira.get("RHAIRFE-1234")
         assert issue["fields"]["status"]["name"] == "New"
+
+
+# ── Initiative-specific fixtures and helpers ──────────────────────────────────
+
+
+@pytest.fixture
+def init_art_dir(tmp_path):
+    """Create a minimal artifacts directory for initiative submissions."""
+    for d in ["initiatives", "initiative-reviews", "initiative-originals"]:
+        os.makedirs(tmp_path / d)
+    orig = os.getcwd()
+    os.chdir(tmp_path)
+    yield str(tmp_path)
+    os.chdir(orig)
+
+
+def _run_initiative_submit(artifacts_dir, server_url, extra_flags=None):
+    """Run submit.py --type initiative against the jira-emulator."""
+    env = {
+        **os.environ,
+        "JIRA_SERVER": server_url,
+        "JIRA_USER": "admin",
+        "JIRA_TOKEN": "admin",
+    }
+    cmd = [sys.executable, SCRIPT, "--type", "initiative", "--artifacts-dir", artifacts_dir]
+    if extra_flags:
+        cmd.extend(extra_flags)
+    return subprocess.run(cmd, capture_output=True, text=True, env=env)
+
+
+INITIATIVE_TASK_FM = """\
+---
+initiative_id: {init_id}
+title: Test Initiative
+priority: Major
+status: Ready
+---
+
+## Engineering Objective
+
+Consolidate inference backends under a unified API.
+
+## Success Criteria
+
+- Single API surface for all backends
+"""
+
+INITIATIVE_REVIEW_FM = """\
+---
+initiative_id: {init_id}
+score: 9
+pass: true
+recommendation: submit
+feasibility: feasible
+alignment: {alignment}
+auto_revised: false
+needs_attention: false
+scores:
+  what: 2
+  why: 2
+  scope: 2
+  open_to_how: 2
+  right_sized: 1
+---
+
+## Assessor Feedback
+Looks good.
+"""
+
+
+# ── Initiative Alignment Label Tests ──────────────────────────────────────────
+
+
+class TestAlignmentLabels:
+    """Initiative-specific: alignment field maps to alignment labels."""
+
+    def test_strong_alignment_label_applied(self, init_art_dir, jira):
+        """alignment=strong → initiative-creator-alignment-strong label."""
+        _write(
+            f"{init_art_dir}/initiatives/INIT-001.md",
+            INITIATIVE_TASK_FM.format(init_id="INIT-001"),
+        )
+        _write(
+            f"{init_art_dir}/initiative-reviews/INIT-001-review.md",
+            INITIATIVE_REVIEW_FM.format(init_id="INIT-001", alignment="strong"),
+        )
+
+        r = _run_initiative_submit(init_art_dir, jira.url)
+        assert r.returncode == 0, r.stderr
+
+        issues = jira.search("project = RHOAIENG")
+        assert len(issues) == 1
+        issue = jira.get(issues[0]["key"])
+        assert "initiative-creator-alignment-strong" in issue["fields"]["labels"]
+        assert "initiative-creator-alignment-partial" not in issue["fields"]["labels"]
+        assert "initiative-creator-alignment-weak" not in issue["fields"]["labels"]
+
+    def test_partial_alignment_label_applied(self, init_art_dir, jira):
+        """alignment=partial → initiative-creator-alignment-partial label."""
+        _write(
+            f"{init_art_dir}/initiatives/INIT-001.md",
+            INITIATIVE_TASK_FM.format(init_id="INIT-001"),
+        )
+        _write(
+            f"{init_art_dir}/initiative-reviews/INIT-001-review.md",
+            INITIATIVE_REVIEW_FM.format(init_id="INIT-001", alignment="partial"),
+        )
+
+        r = _run_initiative_submit(init_art_dir, jira.url)
+        assert r.returncode == 0, r.stderr
+
+        issues = jira.search("project = RHOAIENG")
+        assert len(issues) == 1
+        issue = jira.get(issues[0]["key"])
+        assert "initiative-creator-alignment-partial" in issue["fields"]["labels"]
+        assert "initiative-creator-alignment-strong" not in issue["fields"]["labels"]
+
+    def test_weak_alignment_label_applied(self, init_art_dir, jira):
+        """alignment=weak → initiative-creator-alignment-weak label."""
+        _write(
+            f"{init_art_dir}/initiatives/INIT-001.md",
+            INITIATIVE_TASK_FM.format(init_id="INIT-001"),
+        )
+        _write(
+            f"{init_art_dir}/initiative-reviews/INIT-001-review.md",
+            INITIATIVE_REVIEW_FM.format(init_id="INIT-001", alignment="weak"),
+        )
+
+        r = _run_initiative_submit(init_art_dir, jira.url)
+        assert r.returncode == 0, r.stderr
+
+        issues = jira.search("project = RHOAIENG")
+        assert len(issues) == 1
+        issue = jira.get(issues[0]["key"])
+        assert "initiative-creator-alignment-weak" in issue["fields"]["labels"]
+        assert "initiative-creator-alignment-strong" not in issue["fields"]["labels"]
+
+    def test_no_alignment_no_label(self, init_art_dir, jira):
+        """No alignment field → no alignment label applied."""
+        review_no_alignment = """\
+---
+initiative_id: INIT-001
+score: 9
+pass: true
+recommendation: submit
+feasibility: feasible
+auto_revised: false
+needs_attention: false
+scores:
+  what: 2
+  why: 2
+  scope: 2
+  open_to_how: 2
+  right_sized: 1
+---
+
+## Assessor Feedback
+Looks good.
+"""
+        _write(
+            f"{init_art_dir}/initiatives/INIT-001.md",
+            INITIATIVE_TASK_FM.format(init_id="INIT-001"),
+        )
+        _write(
+            f"{init_art_dir}/initiative-reviews/INIT-001-review.md",
+            review_no_alignment,
+        )
+
+        r = _run_initiative_submit(init_art_dir, jira.url)
+        assert r.returncode == 0, r.stderr
+
+        issues = jira.search("project = RHOAIENG")
+        assert len(issues) == 1
+        issue = jira.get(issues[0]["key"])
+        labels = issue["fields"]["labels"]
+        assert not any("alignment" in label for label in labels)

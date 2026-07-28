@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""Tests for generate_run_report.py --type initiative — initiative run report generation."""
+
+import os
+import subprocess
+import sys
+
+import pytest
+import yaml
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+
+from generate_run_report import _parse_run_id, build_report
+
+REVIEW_TEMPLATE = """\
+---
+initiative_id: {init_id}
+score: {score}
+pass: {pass_val}
+recommendation: {recommendation}
+feasibility: feasible
+auto_revised: {auto_revised}
+needs_attention: false
+alignment: {alignment}
+scores:
+  what: {what}
+  why: {why}
+  scope: {scope}
+  open_to_how: {open_to_how}
+  right_sized: {right_sized}
+{extra}
+---
+
+## Feedback
+Looks good.
+"""
+
+
+def _write(path, content):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(content)
+
+
+@pytest.fixture
+def art_dir(tmp_path, monkeypatch):
+    os.makedirs(tmp_path / "artifacts" / "initiative-reviews")
+    import generate_run_report
+
+    monkeypatch.setattr(generate_run_report, "DEFAULT_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
+    return str(tmp_path / "artifacts")
+
+
+class TestParseRunId:
+    def test_yyyymmdd_hhmmss_format(self):
+        assert _parse_run_id("20260404-170041") == "20260404-170041"
+
+    def test_iso_format(self):
+        assert _parse_run_id("2026-04-04T17:00:41Z") == "20260404-170041"
+
+    def test_iso_format_with_offset(self):
+        assert _parse_run_id("2026-04-04T17:00:41+00:00") == "20260404-170041"
+
+
+class TestBuildReport:
+    def test_basic_report(self, art_dir):
+        _write(
+            f"{art_dir}/initiative-reviews/INIT-001-review.md",
+            REVIEW_TEMPLATE.format(
+                init_id="INIT-001",
+                score=8,
+                pass_val="true",
+                recommendation="submit",
+                auto_revised="false",
+                alignment="strong",
+                what=2,
+                why=2,
+                scope=2,
+                open_to_how=1,
+                right_sized=1,
+                extra="",
+            ),
+        )
+        report = build_report(
+            ["INIT-001"], "20260404-170041", artifacts_dir=art_dir, entry_type="initiative"
+        )
+        assert report["run_id"] == "20260404-170041"
+        assert report["input_count"] == 1
+        assert len(report["per_initiative"]) == 1
+        assert report["per_initiative"][0]["id"] == "INIT-001"
+        assert report["per_initiative"][0]["after_score"] == 8
+        assert report["results"]["passed"] == 1
+        assert "batch_size" not in report
+
+    def test_missing_review_counts_as_error(self, art_dir):
+        report = build_report(
+            ["INIT-MISSING"], "20260404-170041", artifacts_dir=art_dir, entry_type="initiative"
+        )
+        assert report["results"]["errors"] == 1
+        assert len(report["errors"]) == 1
+        assert report["errors"][0]["id"] == "INIT-MISSING"
+
+    def test_after_scores_avg(self, art_dir):
+        _write(
+            f"{art_dir}/initiative-reviews/INIT-001-review.md",
+            REVIEW_TEMPLATE.format(
+                init_id="INIT-001",
+                score=8,
+                pass_val="true",
+                recommendation="submit",
+                auto_revised="false",
+                alignment="strong",
+                what=2,
+                why=2,
+                scope=2,
+                open_to_how=2,
+                right_sized=0,
+                extra="",
+            ),
+        )
+        _write(
+            f"{art_dir}/initiative-reviews/INIT-002-review.md",
+            REVIEW_TEMPLATE.format(
+                init_id="INIT-002",
+                score=6,
+                pass_val="false",
+                recommendation="revise",
+                auto_revised="false",
+                alignment="partial",
+                what=2,
+                why=0,
+                scope=2,
+                open_to_how=0,
+                right_sized=2,
+                extra="",
+            ),
+        )
+        report = build_report(
+            ["INIT-001", "INIT-002"],
+            "20260404-170041",
+            artifacts_dir=art_dir,
+            entry_type="initiative",
+        )
+        assert report["after_scores_avg"]["total"] == 7.0
+        assert report["after_scores_avg"]["what"] == 2.0
+        assert report["after_scores_avg"]["why"] == 1.0
+
+    def test_before_scores_tracked(self, art_dir):
+        _write(
+            f"{art_dir}/initiative-reviews/INIT-001-review.md",
+            REVIEW_TEMPLATE.format(
+                init_id="INIT-001",
+                score=8,
+                pass_val="true",
+                recommendation="submit",
+                auto_revised="true",
+                alignment="strong",
+                what=2,
+                why=2,
+                scope=2,
+                open_to_how=1,
+                right_sized=1,
+                extra="before_score: 5\nbefore_scores:\n  what: 1\n"
+                "  why: 1\n  scope: 1\n"
+                "  open_to_how: 1\n  right_sized: 1",
+            ),
+        )
+        report = build_report(
+            ["INIT-001"], "20260404-170041", artifacts_dir=art_dir, entry_type="initiative"
+        )
+        assert report["before_scores_avg"]["total"] == 5.0
+        assert report["before_scores_avg"]["what"] == 1.0
+        entry = report["per_initiative"][0]
+        assert entry["before_score"] == 5
+        assert entry["revision_cycles"] == 1
+
+    def test_split_counted(self, art_dir):
+        _write(
+            f"{art_dir}/initiative-reviews/INIT-001-review.md",
+            REVIEW_TEMPLATE.format(
+                init_id="INIT-001",
+                score=5,
+                pass_val="false",
+                recommendation="split",
+                auto_revised="false",
+                alignment="weak",
+                what=1,
+                why=1,
+                scope=1,
+                open_to_how=1,
+                right_sized=1,
+                extra="",
+            ),
+        )
+        report = build_report(
+            ["INIT-001"], "20260404-170041", artifacts_dir=art_dir, entry_type="initiative"
+        )
+        assert report["results"]["split"] == 1
+
+    def test_alignment_in_entry(self, art_dir):
+        _write(
+            f"{art_dir}/initiative-reviews/INIT-001-review.md",
+            REVIEW_TEMPLATE.format(
+                init_id="INIT-001",
+                score=7,
+                pass_val="true",
+                recommendation="submit",
+                auto_revised="false",
+                alignment="partial",
+                what=2,
+                why=1,
+                scope=2,
+                open_to_how=1,
+                right_sized=1,
+                extra="",
+            ),
+        )
+        report = build_report(
+            ["INIT-001"], "20260404-170041", artifacts_dir=art_dir, entry_type="initiative"
+        )
+        assert report["per_initiative"][0]["alignment"] == "partial"
+
+
+class TestCLI:
+    def test_auto_discovers_review_files(self, tmp_path):
+        art = str(tmp_path / "artifacts")
+        os.makedirs(os.path.join(art, "initiative-reviews"))
+        _write(
+            f"{art}/initiative-reviews/INIT-100-review.md",
+            REVIEW_TEMPLATE.format(
+                init_id="INIT-100",
+                score=8,
+                pass_val="true",
+                recommendation="submit",
+                auto_revised="false",
+                alignment="strong",
+                what=2,
+                why=2,
+                scope=2,
+                open_to_how=1,
+                right_sized=1,
+                extra="",
+            ),
+        )
+        script = os.path.join(os.path.dirname(__file__), "..", "scripts", "generate_run_report.py")
+        result = subprocess.run(
+            [
+                sys.executable,
+                script,
+                "--type",
+                "initiative",
+                "--start-time",
+                "20260404-170041",
+                "--artifacts-dir",
+                art,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        out_path = result.stdout.strip()
+        with open(out_path) as f:
+            report = yaml.safe_load(f)
+        assert "INIT-100" in [e["id"] for e in report["per_initiative"]]

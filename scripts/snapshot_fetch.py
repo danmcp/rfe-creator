@@ -53,6 +53,17 @@ from jira_utils import (
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SNAPSHOT_DIR = os.path.join(SCRIPT_DIR, "..", "artifacts", "auto-fix-runs")
 
+SNAPSHOT_CONFIG = {
+    "rfe": {
+        "ignore_label": "rfe-creator-ignore",
+        "snapshot_prefix": "issue-snapshot-",
+    },
+    "initiative": {
+        "ignore_label": "initiative-creator-ignore",
+        "snapshot_prefix": "initiative-snapshot-",
+    },
+}
+
 
 def normalize_for_hash(text):
     """Aggressively normalize text for content hashing.
@@ -126,13 +137,14 @@ def fetch_all_issues(server, user, token, jql):
     return issues
 
 
-def find_previous_snapshot():
+def find_previous_snapshot(snapshot_dir=None, prefix="issue-snapshot-"):
     """Find the most recent valid promoted snapshot.
 
-    Walks backwards through issue-snapshot-*.yaml files sorted by name
+    Walks backwards through <prefix>*.yaml files sorted by name
     (which sorts by timestamp since names use YYYYMMDD-HHMMSS format).
     """
-    pattern = os.path.join(SNAPSHOT_DIR, "issue-snapshot-*.yaml")
+    snap_dir = snapshot_dir or SNAPSHOT_DIR
+    pattern = os.path.join(snap_dir, f"{prefix}*.yaml")
     files = sorted(glob.glob(pattern), reverse=True)
 
     for f in files:
@@ -146,7 +158,7 @@ def find_previous_snapshot():
     return None, None
 
 
-def load_snapshot_from_dir(data_dir):
+def load_snapshot_from_dir(data_dir, prefix="issue-snapshot-"):
     """Find the previous snapshot in a local data directory.
 
     Follows the 'latest' symlink to find the most recent run, then
@@ -188,7 +200,7 @@ def load_snapshot_from_dir(data_dir):
         snap_dir = os.path.join(run_path, "auto-fix-runs")
         if not os.path.isdir(snap_dir):
             continue
-        pattern = os.path.join(snap_dir, "issue-snapshot-*.yaml")
+        pattern = os.path.join(snap_dir, f"{prefix}*.yaml")
         snap_files = sorted(glob.glob(pattern), reverse=True)
         for sf in snap_files:
             try:
@@ -263,17 +275,20 @@ def write_id_file(path, ids):
             f.write(f"{id_}\n")
 
 
-def update_snapshot_hashes(hashes, snapshot_dir=None, mark_processed=None):
+def update_snapshot_hashes(
+    hashes, snapshot_dir=None, mark_processed=None, prefix="issue-snapshot-"
+):
     """Update the latest snapshot with post-submit content hashes.
 
-    Called by submit.py after Jira writes so the next fetch sees
-    the post-submit state and doesn't re-flag our own changes.
+    Called by submit.py after Jira writes so
+    the next fetch sees the post-submit state and doesn't re-flag
+    our own changes.
 
     Also marks additional IDs as processed without changing their hash
     (e.g., reviewed but no content changes needed).
     """
     snap_dir = snapshot_dir or SNAPSHOT_DIR
-    pattern = os.path.join(snap_dir, "issue-snapshot-*.yaml")
+    pattern = os.path.join(snap_dir, f"{prefix}*.yaml")
     files = sorted(glob.glob(pattern), reverse=True)
 
     for f in files:
@@ -304,6 +319,8 @@ def update_snapshot_hashes(hashes, snapshot_dir=None, mark_processed=None):
 
 def cmd_fetch(args):
     """Fetch all issues, diff against previous snapshot, write ID files."""
+    config = SNAPSHOT_CONFIG[args.type]
+    prefix = config["snapshot_prefix"]
     reprocess = getattr(args, "reprocess", False)
 
     # --reprocess without --jql: skip Jira, reuse prior IDs, all changed
@@ -331,11 +348,11 @@ def cmd_fetch(args):
         sys.exit(1)
 
     # Load previous snapshot
-    prev_path, prev_data = find_previous_snapshot()
+    prev_path, prev_data = find_previous_snapshot(prefix=prefix)
 
     # If no local snapshot, try the data directory
     if prev_data is None and args.data_dir:
-        prev_data = load_snapshot_from_dir(args.data_dir)
+        prev_data = load_snapshot_from_dir(args.data_dir, prefix=prefix)
 
     if prev_path:
         prev_count = len(prev_data.get("issues", {}))
@@ -349,9 +366,10 @@ def cmd_fetch(args):
     # Hard filters only
     # NOTE: "labels not in (X)" excludes issues with NO labels at all in Jira,
     # so we must also include "labels is EMPTY" to catch unlabeled issues.
+    ignore_label = config["ignore_label"]
     jql = (
         f"({args.jql}) AND statusCategory != Done "
-        f"AND (labels not in (rfe-creator-ignore) OR labels is EMPTY)"
+        f"AND (labels not in ({ignore_label}) OR labels is EMPTY)"
     )
     print(f"JQL={jql}", file=sys.stderr)
 
@@ -429,7 +447,7 @@ def cmd_fetch(args):
         "issues": merged_issues,
     }
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    out_path = os.path.join(SNAPSHOT_DIR, f"issue-snapshot-{ts}.yaml")
+    out_path = os.path.join(SNAPSHOT_DIR, f"{prefix}{ts}.yaml")
     with open(out_path, "w", encoding="utf-8") as f:
         yaml.dump(snapshot, f, default_flow_style=False, sort_keys=False)
 
@@ -463,6 +481,12 @@ def main():
 
     fetch_p = sub.add_parser("fetch", help="Fetch issues and diff against previous snapshot")
     fetch_p.add_argument("jql", nargs="?", default=None, help="JQL query string")
+    fetch_p.add_argument(
+        "--type",
+        choices=["rfe", "initiative"],
+        default="rfe",
+        help="Issue type (default: rfe)",
+    )
     fetch_p.add_argument(
         "--limit", type=int, default=None, help="Max number of changed keys to output"
     )
