@@ -1,0 +1,12 @@
+clarifying_context: 'Project Helix is heading toward a developer preview and we have
+  been mostly heads-down building without much outside input. That makes me nervous
+  because once the preview ships, changing the API contract gets really painful. We
+  need to get the SDK in front of actual users now -- let them try the client libraries,
+  poke at the endpoints, read the docs -- and tell us what feels wrong. Are the method
+  signatures intuitive? Is the getting-started guide actually helpful? Where do people
+  get stuck? If we wait until after dev-preview to hear this stuff, we will be stuck
+  with whatever we shipped. Better to take the hit now while things are still fluid.'
+priority: Major
+prompt: Before we cut the developer preview of Project Helix, we need real users
+  exercising the SDK and telling us what works and what does not -- the API shape,
+  the docs, the onboarding flow, all of it.

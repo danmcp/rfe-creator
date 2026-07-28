@@ -1,0 +1,18 @@
+clarifying_context: 'We have model registries in three different environments right now
+  and they are completely siloed. A model that gets validated in the staging environment
+  has to be manually re-registered in production, and there is no good way to trace
+  lineage across the boundary. People lose track of which version is deployed where,
+  and promoting a model from experimentation to serving involves a bunch of manual steps
+  that are error-prone and slow.
+
+  What we want is a federation layer that lets the registries talk to each other. You
+  would register a model once and then promote it across environments with metadata and
+  lineage intact. KServe and the serving layer should be able to pull from any federated
+  registry transparently. We are not talking about replacing the Model Registry instances,
+  just adding a sync and discovery mechanism on top. The tricky part is handling schema
+  differences between the registries and making sure access controls carry over correctly
+  during promotion.'
+priority: Major
+prompt: Our model registries are siloed across environments and promoting a model from
+  staging to production is a manual, error-prone process. We want a federation layer
+  that connects them so models can be promoted with lineage and metadata intact.

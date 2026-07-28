@@ -1,0 +1,16 @@
+clarifying_context: 'We keep finding model serving breakages late because testing only happens
+  once RC images are cut. The proposal is to start running serving tests much earlier against
+  nightly pre-release builds so problems surface while there is still time to fix them without
+  scrambling. The first step would be wiring up the nightly pipeline to pull candidate images
+  from the inference services registry and running a basic smoke suite. From there we would
+  grow the coverage to include llm-d and managed-service workloads.
+
+  Because this spans two separate engineering groups, there is a coordination piece --
+  both sides need to agree on which validations belong at this stage versus what only makes
+  sense at the RC gate. We should also stand up a lightweight dashboard so people can glance
+  at nightly health without trawling through CI logs. A shared planning document lives at
+  docs.example.com/d/shift-left-serving.'
+priority: Critical
+prompt: Let us start running model serving integration tests against pre-release images in
+  the nightly pipeline instead of waiting for RC. We need cross-team alignment on test
+  scope between the two groups involved, plus a dashboard for visibility.

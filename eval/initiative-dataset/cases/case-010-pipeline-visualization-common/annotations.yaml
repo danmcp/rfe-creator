@@ -1,0 +1,15 @@
+difficulty: null
+expected_alignment: null
+expected_feasibility: null
+expected_pass: null
+expected_recommendation: null
+expected_scores:
+  what: null
+  why: null
+  scope: null
+  open_to_how: null
+  right_sized: null
+expected_total: null
+known_issues: []
+tags:
+  - new-feature

@@ -1,0 +1,15 @@
+clarifying_context: 'One of our platform teams is still running their test suites
+  through an old execution path that nobody else uses anymore. It takes forever, it
+  needs dedicated infrastructure, and it means developers do not get test signal until
+  well after they have moved on to other things. The rest of the org has shifted to
+  running containerized tests early in the PR cycle and we need to bring this team
+  along. That means packaging the Robot Framework and Go suites into containers,
+  hooking them into the standard config-driven test runner, and then sunsetting the
+  old path once we have confidence the new one is solid. The tests cover Ray lifecycle,
+  Kueue scheduling, training jobs, multi-node coordination -- so the containerization
+  has to account for those harness dependencies without actually needing a real cluster
+  for the early-signal runs.'
+priority: Major
+prompt: One of our platform teams is stuck on a legacy test execution model while
+  everyone else runs containerized tests early in the dev cycle. We need to
+  containerize those suites and retire the old path.

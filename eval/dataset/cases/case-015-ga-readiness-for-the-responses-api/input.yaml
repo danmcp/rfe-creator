@@ -15,19 +15,17 @@ clarifying_context: 'Customers: Southern European Public Sector (7 accounts: NAR
   API is the primary interface for agentic capabilities (tool use, multi-turn reasoning, structured outputs), so gaps here
   block the core use cases.
 
-  Scope: This is a large effort with multiple sub-workstreams. The core need is full OpenAI Responses API field/parameter
-  parity with SSE streaming and Conversations API integration. Recommended split-offs include: (1) Production-grade response
-  storage and persistence with retention policies and scale validation, (2) Multi-provider validation matrix across vLLM,
-  remote::openai, remote::anthropic with automated CI testing, (3) Responses API observability integration with GenAI semantic
-  conventions, MLflow/OTEL tracing, and dashboard templates, (4) TP-to-GA upgrade and migration path with documented migration
-  steps, automated tooling, and QE validation.
+  Scope: This initiative covers two workstreams: (1) Full OpenAI Responses API field and parameter parity — closing all
+  silent field drops, adding missing parameters, matching SSE streaming event format, and integrating the Conversations API,
+  and (2) Multi-provider validation and compatibility certification — building an automated CI test matrix across vLLM,
+  remote::openai, and remote::anthropic backends, publishing a per-field compatibility matrix, and running performance benchmarks
+  (latency p50/p95/p99, throughput) with sizing guidance. These could be done separately.
 
   Success criteria: A customer application written against the OpenAI Responses API (Python SDK) works against Red Hat AI''s
   Responses API with zero code changes, or all differences are documented in a published compatibility matrix. No silent field
   drops — every unsupported field returns a clear error or is documented as unsupported. Streaming behavior matches OpenAI
   SSE event format for all supported response types. Compatibility matrix published documenting per-field, per-parameter coverage
-  compared to OpenAI Responses API. Performance benchmarks published for representative workloads (latency p50/p95/p99, throughput,
-  resource consumption) with sizing guidance.'
+  compared to OpenAI Responses API. Performance benchmarks published for representative workloads with sizing guidance.'
 priority: Critical
 prompt: We need to get the Responses API ready for GA. Right now it's in Tech Preview and we intentionally shipped with incomplete
   OpenAI API coverage to move fast, but customers can't migrate production workloads because of silent field drops, missing

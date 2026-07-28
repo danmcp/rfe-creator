@@ -1,0 +1,18 @@
+clarifying_context: 'We have built several AI-assisted engineering tools over the past couple
+  of quarters -- things like an automated bug triage bot, code-generation helpers for test
+  authoring, a structured proposal builder, and an evaluation framework for validating
+  outputs. The problem is that the two of our backend teams have not really started using
+  any of them. Adoption so far has been organic and that has not worked, so we are switching
+  to a more deliberate approach: each team designates a point person who owns the rollout,
+  they carve out dedicated capacity in the sprint for hands-on onboarding, and we run
+  walk-through sessions so people see how the tools fit into the work they are already doing.
+
+  The measure of success is not just that people log in once -- we want to see real workflow
+  changes. Are bugs getting resolved faster with the triage bot? Is test coverage going up
+  because people are generating scaffolding instead of writing it from scratch? Are proposals
+  going through the builder instead of being free-typed? The adoption tracker is at
+  wiki.example.com/spaces/TOOLING/pages/rollout.'
+priority: Major
+prompt: We need to move the two of our backend teams from awareness to actual daily use
+  of our AI engineering tools. That means dedicated rollout owners on each team, reserved
+  sprint capacity for learning, and structured enablement sessions.

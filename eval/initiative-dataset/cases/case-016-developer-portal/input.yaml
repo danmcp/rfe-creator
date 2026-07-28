@@ -1,0 +1,22 @@
+clarifying_context: 'We have solid documentation across the org but it lives in a lot
+  of different places -- team wikis, repo READMEs, design docs, runbooks in separate
+  repos. Each one is well-maintained by the team that owns it, but there is no single
+  entry point that ties them together. New engineers end up asking around to find the
+  right doc because they do not know where to look, not because the content does not
+  exist.
+
+  We want to build a unified developer portal that acts as a front door to all of this.
+  It would index documentation from repos and wikis automatically, provide a service
+  catalog showing what each component does and who owns it, and offer a searchable
+  surface so people can find what they need without knowing which team wrote it. We
+  also want to include a service dependency graph so people can understand how
+  components connect at a glance.
+
+  Several teams have already built lightweight internal tools for their own docs and
+  we should build on what they have learned. The goal is to reduce the time it takes
+  new hires to find their way around and make existing documentation more discoverable
+  without asking teams to change how they write it.'
+priority: Major
+prompt: We have good documentation spread across many team wikis and repos but no
+  unified entry point. We want a developer portal that indexes everything into one
+  searchable surface with a service catalog and dependency graph.

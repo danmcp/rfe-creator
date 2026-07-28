@@ -22,6 +22,17 @@ on:
         description: "PR number to evaluate"
         required: true
         type: number
+      eval_config:
+        description: "Eval config to run"
+        type: choice
+        default: eval.yaml
+        options:
+          - eval.yaml
+          - eval-initiative.yaml
+      quick_mode:
+        description: "Quick mode: 2 cases only (~$5 vs ~$50)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -49,6 +60,8 @@ jobs:
           PR_SHA: ${{ steps.pr.outputs.sha }}
           PR_REF: ${{ steps.pr.outputs.ref }}
           REPO: ${{ github.repository }}
+          EVAL_CONFIG: ${{ inputs.eval_config }}
+          QUICK_MODE: ${{ inputs.quick_mode }}
         run: |
           curl --fail-with-body \
             --request POST \
@@ -58,4 +71,6 @@ jobs:
             --form "variables[GITHUB_SHA]=${PR_SHA}" \
             --form "variables[GITHUB_HEAD_REF]=${PR_REF}" \
             --form "variables[GITHUB_REPO]=${REPO}" \
+            --form "variables[EVAL_CONFIG]=${EVAL_CONFIG}" \
+            --form "variables[QUICK_MODE]=${QUICK_MODE}" \
             "${GITLAB_TRIGGER_URL}"

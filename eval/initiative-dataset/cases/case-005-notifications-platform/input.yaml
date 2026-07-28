@@ -1,0 +1,25 @@
+clarifying_context: 'There is no way for the platform to proactively tell you something
+  happened. If you kick off a training run or a pipeline and walk away, you have to
+  come back and manually check whether it finished or failed. We want to fix that
+  with a real notification infrastructure -- a panel you can pull open from the header
+  to see recent events, plus the ability to wire those alerts to wherever you actually
+  pay attention: your inbox, a Slack channel, or a webhook for automation. On the
+  backend, the tricky part is getting all the different services to publish events in
+  a uniform way so the notification layer can consume them consistently. We have looked
+  at how other products solve this and the approach is pretty well understood -- central
+  event bus, pluggable delivery targets, per-user preferences.
+
+  Separately, we also need a platform-wide audit logging capability for compliance.
+  Security and governance teams need a tamper-evident record of who did what and when
+  across the platform -- model deployments, permission changes, data access, pipeline
+  executions. This is driven by enterprise customers going through SOC 2 and FedRAMP
+  certification. The audit log needs its own storage, retention policies, and an
+  admin-facing query interface. It is a different audience and different requirements
+  from the user-facing notification system, but both need services to emit structured
+  events so there is some shared infrastructure opportunity.'
+priority: Normal
+prompt: The platform needs a notification system so users stop having to poll for
+  results manually, plus a platform-wide audit logging capability for compliance
+  and governance. Notifications should include an in-app panel and configurable
+  delivery to email, Slack, and webhooks. Audit logging needs tamper-evident records
+  of all platform actions with retention policies and an admin query interface.

@@ -80,3 +80,53 @@ Input files contain only the fields the skill needs in batch Mode A — no Jira 
 During evaluation, PreToolUse hooks:
 - **Auto-answer** `AskUserQuestion` prompts from test case context
 - **Block Jira** interactions (the skill runs with `--dry-run`)
+
+---
+
+# Evaluation — initiative.speedrun
+
+Automated evaluation of the `initiative.speedrun` pipeline using the [agent-eval-harness](https://github.com/opendatahub-io/agent-eval-harness).
+
+## Quick Start
+
+```bash
+# Run with Opus
+/eval-run --config eval-initiative.yaml --model opus
+
+# Compare against a previous run
+/eval-run --config eval-initiative.yaml --model opus --baseline <previous-run-id>
+```
+
+## How it works
+
+The evaluation runs the `initiative.speedrun` skill headlessly against 20 test cases derived from real RHOAIENG Jira initiatives. Each test case provides an objective (prompt + clarifying context), and the pipeline creates, reviews (with assessment, feasibility, and strategic alignment), auto-fixes, and (dry-run) submits Initiatives.
+
+### Configuration
+
+- **`eval-initiative.yaml`** — defines the skill, dataset, outputs, judges, and thresholds.
+- **`eval/config/initiative-pairwise-judge.md`** — prompt for blind A/B comparison across runs.
+
+### Dataset
+
+`eval/initiative-dataset/cases/` contains 20 test cases, each with:
+
+| File | Purpose |
+|------|---------|
+| `input.yaml` | Skill input: `prompt`, `priority`, `clarifying_context` |
+| `annotations.yaml` | Expected scores, feasibility/recommendation/alignment expectations, test tags |
+
+Two cases with empty descriptions test sparse-input handling.
+
+### Judges
+
+| Judge | Type | What it checks |
+|-------|------|----------------|
+| `files_exist` | check | Task + review files produced |
+| `frontmatter_valid` | check | YAML schema, score ranges, alignment enum, pass logic consistency |
+| `run_report_exists` | check | Initiative run report YAML with required fields |
+| `recommendation_consistency` | check | pass/fail aligns with recommendation, infeasible != submit, weak alignment sets needs_attention |
+| `pipeline_flow` | check | Phases ran, no fatal tracebacks |
+| `architecture_context_used` | check | Feasibility files used architecture context |
+| `initiative_quality` | LLM | Initiative quality (WHAT/WHY/Scope/HOW/Right-sized) + calibration accuracy |
+| `revision_quality` | LLM | Revision improvement + content preservation |
+| `pairwise` | LLM | Blind A/B comparison (only with `--baseline`) |

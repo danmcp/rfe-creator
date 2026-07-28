@@ -1,0 +1,17 @@
+clarifying_context: 'The platform currently does not have a way for users to search across
+  all resources from a single place. We want to build a global search capability that
+  spans the UI, backend APIs, and navigation. The idea is that a user should be able
+  to type a query into a search bar in the top nav and get results across projects,
+  models, pipelines, notebooks, and other resource types without having to navigate
+  to each section individually.
+
+  This is a 3P (third-party platform) initiative, so it needs to integrate cleanly
+  with the existing navigation framework and respect whatever access controls are in
+  place. The backend piece needs a search API that aggregates across multiple resource
+  stores, and the UI needs a results view that groups and ranks results sensibly. We
+  have seen this pattern work well in other enterprise platforms and it is consistently
+  one of the top usability requests from users working with large numbers of assets.'
+priority: Normal
+prompt: We need to build a global search feature for the platform that integrates with
+  the UI, backend APIs, and navigation so users can find resources across the entire
+  product from a single search bar.
