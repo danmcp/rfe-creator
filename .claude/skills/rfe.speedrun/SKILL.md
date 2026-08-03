@@ -32,6 +32,19 @@ Determine pipeline mode:
 
 If no arguments provided, stop with usage instructions.
 
+## Step 0.5: Bootstrap Dependencies
+
+Run bootstrap early so agent definitions (e.g. `rfe-scorer`) are installed
+in `.claude/agents/` before they're needed in Phase 2. The CREATE phase gives
+the background agent rescan time to register them.
+
+```bash
+bash scripts/bootstrap-assess-rfe.sh
+```
+
+If bootstrap fails, retry once. If the retry also fails, continue — auto-fix
+will attempt bootstrap again in its own setup step.
+
 ## Defaults
 
 When the user doesn't specify, use these defaults:
