@@ -429,12 +429,50 @@ def get_schema_yaml(schema_type):
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?\n)---\s*\n", re.DOTALL)
 
 
+def _yaml_error_message(path, yaml_str, exc):
+    """Describe a frontmatter parse failure in one actionable line.
+
+    PyYAML's own traceback is unreadable in agent logs. Lead with the file and
+    the offending line so the message survives log truncation, and say how to
+    avoid it — the usual cause is a hand-written block whose free-text value
+    contains an unquoted ':'.
+    """
+    problem = getattr(exc, "problem", None) or str(exc)
+    mark = getattr(exc, "problem_mark", None)
+    if mark is None:
+        return f"Invalid YAML frontmatter in {path}: {problem}"
+
+    lines = yaml_str.splitlines()
+    source = lines[mark.line].strip() if 0 <= mark.line < len(lines) else ""
+    near = f" near {source!r}" if source else ""
+    return (
+        f"Invalid YAML frontmatter in {path}, line {mark.line + 1}{near} — {problem}. "
+        f"Set frontmatter with scripts/frontmatter.py rather than by hand; "
+        f"values containing ':' must be quoted."
+    )
+
+
+def _body_without_frontmatter(path):
+    """Return the markdown body, ignoring the contents of the frontmatter block.
+
+    The delimiters are matched by regex, so the body is recoverable even when
+    the YAML between them does not parse.
+    """
+    with open(path, encoding="utf-8") as f:
+        content = f.read()
+    match = _FRONTMATTER_RE.match(content)
+    return content[match.end() :] if match else content
+
+
 def read_frontmatter(path):
     """Read and parse YAML frontmatter from a markdown file.
 
     Returns:
         (data_dict, body_string) — frontmatter as dict, remainder as string.
         Returns ({}, full_content) if no frontmatter found.
+
+    Raises:
+        ValidationError: if the frontmatter block is present but unparseable.
     """
     with open(path, encoding="utf-8") as f:
         content = f.read()
@@ -446,7 +484,10 @@ def read_frontmatter(path):
     yaml_str = match.group(1)
     body = content[match.end() :]
 
-    data = yaml.safe_load(yaml_str)
+    try:
+        data = yaml.safe_load(yaml_str)
+    except yaml.YAMLError as exc:
+        raise ValidationError(_yaml_error_message(path, yaml_str, exc)) from exc
     if not isinstance(data, dict):
         return {}, content
 
@@ -514,10 +555,11 @@ def write_frontmatter(path, data, schema_type):
             "Frontmatter validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
         )
 
-    # Read existing body if file exists
+    # Read existing body if file exists. The data above is already validated
+    # and complete, so an unparseable existing block is simply overwritten.
     body = ""
     if os.path.exists(path):
-        _, body = read_frontmatter(path)
+        body = _body_without_frontmatter(path)
 
     yaml_str = yaml.dump(data, default_flow_style=False, sort_keys=False, allow_unicode=True)
     content = f"---\n{yaml_str}---\n{body}"
@@ -540,11 +582,23 @@ def update_frontmatter(path, updates, schema_type):
         updates: dict of fields to add/update
         schema_type: schema to validate against
 
+    If the existing frontmatter block is unparseable, it is replaced rather
+    than merged. This is the only repair path available: every writer goes
+    through here, so refusing would leave the caller no way to fix the file
+    except hand-editing YAML — which is what corrupts it in the first place.
+    The validation below is the guard. Updates that do not amount to a
+    complete, valid record still fail, so nothing is dropped silently.
+
     Raises:
         ValidationError: if merged data fails validation
         FileNotFoundError: if file doesn't exist
     """
-    data, body = read_frontmatter(path)
+    try:
+        data, body = read_frontmatter(path)
+    except ValidationError as exc:
+        print(f"Warning: replacing unparseable frontmatter — {exc}", file=sys.stderr)
+        data, body = {}, _body_without_frontmatter(path)
+
     for key, value in updates.items():
         if isinstance(value, dict) and isinstance(data.get(key), dict):
             data[key].update(value)

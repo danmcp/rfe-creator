@@ -58,6 +58,21 @@ scores:
 Error occurred.
 """
 
+CORRUPT_REVIEW = """\
+---
+rfe_id: {rfe_id}
+score: 6
+pass: false
+recommendation: revise
+feasibility: indeterminate
+needs_attention: true
+needs_attention_reason: Blocked: needs architecture input
+---
+
+## Feedback
+The unquoted colon above makes this block unparseable.
+"""
+
 
 def _run(args):
     result = subprocess.run(
@@ -271,3 +286,15 @@ class TestCollectInitiative:
         assert rc == 0
         groups = _parse_output(out)
         assert "INIT-001" in groups["REASSESS"]
+
+
+class TestCollectErrors:
+    def test_unparseable_frontmatter_goes_to_errors(self, art_dir):
+        """A corrupt review is what --errors exists to find, so it must not crash."""
+        _write(
+            f"{art_dir}/artifacts/rfe-reviews/RFE-001-review.md",
+            CORRUPT_REVIEW.format(rfe_id="RFE-001"),
+        )
+        out, _, rc = _run(["--errors", "RFE-001"])
+        assert rc == 0
+        assert "RFE-001" in _parse_output(out)["ERRORS"]
