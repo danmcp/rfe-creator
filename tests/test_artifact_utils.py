@@ -58,6 +58,17 @@ VALID_REVIEW_FM = {
     },
 }
 
+# A hand-written block whose free-text value carries an unquoted colon — the
+# shape seen in eval runs, where review agents wrote frontmatter themselves
+# instead of leaving it to scripts/frontmatter.py.
+CORRUPT_REVIEW = (
+    "---\n"
+    "rfe_id: RFE-015\n"
+    "needs_attention_reason: Blocked: needs architecture input\n"
+    "---\n"
+    "## Assessor Feedback\n\nKeep this body.\n"
+)
+
 
 # ── Schema & Validation ──────────────────────────────────────────────────────
 
@@ -179,6 +190,27 @@ class TestReadFrontmatter:
         data, _ = read_frontmatter("test.md")
         assert data["auto_revised"] is True
 
+    def test_unparseable_raises_validation_error(self, tmp_dir):
+        _write("review.md", CORRUPT_REVIEW)
+        with pytest.raises(ValidationError):
+            read_frontmatter("review.md")
+
+    def test_error_locates_the_offending_line(self, tmp_dir):
+        _write("review.md", CORRUPT_REVIEW)
+        with pytest.raises(ValidationError) as exc_info:
+            read_frontmatter("review.md")
+        message = str(exc_info.value)
+        assert "review.md" in message
+        assert "line 2" in message
+        assert "needs architecture input" in message
+
+    def test_error_is_a_single_line(self, tmp_dir):
+        """A raw PyYAML traceback is unreadable once agent logs truncate it."""
+        _write("review.md", CORRUPT_REVIEW)
+        with pytest.raises(ValidationError) as exc_info:
+            read_frontmatter("review.md")
+        assert "\n" not in str(exc_info.value)
+
 
 # ── read_frontmatter_validated ────────────────────────────────────────────────
 
@@ -267,6 +299,13 @@ class TestWriteFrontmatter:
         write_frontmatter("a/b/c/out.md", VALID_REVIEW_FM.copy(), "rfe-review")
         assert os.path.exists("a/b/c/out.md")
 
+    def test_overwrites_unparseable_block_keeping_body(self, tmp_dir):
+        _write("review.md", CORRUPT_REVIEW)
+        write_frontmatter("review.md", VALID_REVIEW_FM.copy(), "rfe-review")
+        data, body = read_frontmatter("review.md")
+        assert data["rfe_id"] == "RHAIRFE-1234"
+        assert "Keep this body." in body
+
 
 # ── update_frontmatter ────────────────────────────────────────────────────────
 
@@ -300,6 +339,64 @@ class TestUpdateFrontmatter:
         write_frontmatter("review.md", VALID_REVIEW_FM.copy(), "rfe-review")
         with pytest.raises(ValidationError):
             update_frontmatter("review.md", {"recommendation": "invalid"}, "rfe-review")
+
+
+class TestUpdateFrontmatterRepair:
+    """An unparseable block must be repairable through frontmatter.py.
+
+    update_frontmatter is the only writer, so if it refuses on corrupt input
+    the caller's only recourse is hand-editing YAML — the thing that corrupted
+    the file to begin with.
+    """
+
+    # What review-agent.md Step 4 actually passes: no auto_revised, which the
+    # schema defaults to False.
+    STEP_4_FIELDS = {
+        "rfe_id": "RFE-015",
+        "score": 8,
+        "pass": True,
+        "recommendation": "submit",
+        "feasibility": "feasible",
+        "needs_attention": True,
+        "needs_attention_reason": "Blocked: needs architecture input",
+        "scores": {"what": 2, "why": 2, "open_to_how": 2, "not_a_task": 1, "right_sized": 1},
+    }
+
+    def test_repairs_block_and_keeps_body(self, tmp_dir):
+        _write("review.md", CORRUPT_REVIEW)
+        update_frontmatter("review.md", dict(self.STEP_4_FIELDS), "rfe-review")
+        data, body = read_frontmatter("review.md")
+        assert data["rfe_id"] == "RFE-015"
+        assert data["auto_revised"] is False  # supplied by schema default
+        assert "Keep this body." in body
+
+    def test_repaired_value_with_colon_round_trips(self, tmp_dir):
+        """The colon that broke the file is fine once yaml.dump does the quoting."""
+        _write("review.md", CORRUPT_REVIEW)
+        update_frontmatter("review.md", dict(self.STEP_4_FIELDS), "rfe-review")
+        data, _ = read_frontmatter("review.md")
+        assert data["needs_attention_reason"] == "Blocked: needs architecture input"
+
+    def test_warns_that_the_block_was_replaced(self, tmp_dir, capsys):
+        _write("review.md", CORRUPT_REVIEW)
+        update_frontmatter("review.md", dict(self.STEP_4_FIELDS), "rfe-review")
+        assert "replacing unparseable frontmatter" in capsys.readouterr().err
+
+    def test_refuses_incomplete_updates(self, tmp_dir):
+        """Validation is the guard — a partial update must not silently drop fields.
+
+        This is the second Step 4 call, which normally relies on merging.
+        """
+        _write("review.md", CORRUPT_REVIEW)
+        with pytest.raises(ValidationError):
+            update_frontmatter("review.md", {"before_score": 8}, "rfe-review")
+
+    def test_leaves_file_untouched_when_it_refuses(self, tmp_dir):
+        _write("review.md", CORRUPT_REVIEW)
+        with pytest.raises(ValidationError):
+            update_frontmatter("review.md", {"before_score": 8}, "rfe-review")
+        with open("review.md") as f:
+            assert f.read() == CORRUPT_REVIEW
 
 
 # ── Initiative schemas ───────────────────────────────────────────────────────

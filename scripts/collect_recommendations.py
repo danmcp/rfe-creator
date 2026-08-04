@@ -8,7 +8,7 @@ import sys
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from artifact_utils import read_frontmatter, resolve_ids
+from artifact_utils import ValidationError, read_frontmatter, resolve_ids
 
 ARTIFACTS_DIR = os.path.join(os.getcwd(), "artifacts")
 
@@ -72,7 +72,9 @@ def collect_errors(ids, entry_type="rfe"):
             continue
         try:
             data, _ = read_frontmatter(path)
-        except (OSError, UnicodeError, yaml.YAMLError):
+        # read_frontmatter wraps a bad YAML block in ValidationError, so an
+        # unparseable review counts as an error here rather than crashing the run.
+        except (OSError, UnicodeError, yaml.YAMLError, ValidationError):
             error_ids.append(item_id)
             continue
         if data.get("error"):

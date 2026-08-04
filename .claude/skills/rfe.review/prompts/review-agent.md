@@ -19,7 +19,10 @@ python3 scripts/frontmatter.py schema rfe-review
 
 ## Step 3: Write Review File
 
-Write `artifacts/rfe-reviews/{ID}-review.md` with this body structure:
+Write `artifacts/rfe-reviews/{ID}-review.md` with the body structure below — just
+the body, no `---` frontmatter block. Step 4 creates the frontmatter. A hand-written
+block breaks the moment a value contains a colon, and `frontmatter.py` cannot then
+read the file to repair it.
 
    ## Assessor Feedback
    <Full rubric feedback verbatim from assessment result>
