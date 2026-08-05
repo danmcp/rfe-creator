@@ -1,5 +1,5 @@
 ---
-name: initiative.speedrun
+name: initiative-speedrun
 description: End-to-end Initiative pipeline. Accepts a single idea, Jira key(s), or a YAML batch file. Creates, reviews, auto-fixes (with splits), and submits. Supports --headless, --announce-complete, and --dry-run for CI.
 user-invocable: true
 allowed-tools: Read, Write, Edit, Glob, Grep, Bash, AskUserQuestion, Skill
@@ -79,26 +79,26 @@ Count entries and pre-allocate all IDs upfront:
 python3 scripts/next_rfe_id.py --prefix INIT --dir artifacts/initiatives --from-batch <input_file>
 ```
 
-For each entry, launch an Agent to invoke `/initiative.create`. Pass the pre-assigned ID so each Agent knows which ID to use:
+For each entry, launch an Agent to invoke `/initiative-create`. Pass the pre-assigned ID so each Agent knows which ID to use:
 
 ```
-Agent for entry 1:  /initiative.create --headless --initiative-id INIT-001 [--priority <priority>] [--parent <parent_key>] <prompt>
-Agent for entry 2:  /initiative.create --headless --initiative-id INIT-002 [--priority <priority>] [--parent <parent_key>] <prompt>
+Agent for entry 1:  /initiative-create --headless --initiative-id INIT-001 [--priority <priority>] [--parent <parent_key>] <prompt>
+Agent for entry 2:  /initiative-create --headless --initiative-id INIT-002 [--priority <priority>] [--parent <parent_key>] <prompt>
 ...
-Agent for entry N:  /initiative.create --headless --initiative-id INIT-<N> [--priority <priority>] [--parent <parent_key>] <prompt>
+Agent for entry N:  /initiative-create --headless --initiative-id INIT-<N> [--priority <priority>] [--parent <parent_key>] <prompt>
 ```
 
-Each entry is a single objective — `/initiative.create` must produce exactly one Initiative per invocation. Wait for all N agents to complete. You must have exactly N Initiative IDs — if fewer were created, retry the missing entries. **Never delete or re-create task files during Phase 1** — quality issues are addressed in Phase 2 (Auto-fix).
+Each entry is a single objective — `/initiative-create` must produce exactly one Initiative per invocation. Wait for all N agents to complete. You must have exactly N Initiative IDs — if fewer were created, retry the missing entries. **Never delete or re-create task files during Phase 1** — quality issues are addressed in Phase 2 (Auto-fix).
 
 **Mode B (Existing Initiative)**: Skip Phase 1. The Jira key(s) from arguments become the processing list.
 
-**Mode C (Single idea)**: Invoke `/initiative.create` with the user's input:
+**Mode C (Single idea)**: Invoke `/initiative-create` with the user's input:
 
 ```
-/initiative.create [--headless] <idea_text>
+/initiative-create [--headless] <idea_text>
 ```
 
-If not headless, `/initiative.create` will ask clarifying questions. Collect created Initiative IDs.
+If not headless, `/initiative-create` will ask clarifying questions. Collect created Initiative IDs.
 
 After Phase 1 (all modes), persist the ID list to disk:
 
@@ -118,7 +118,7 @@ python3 scripts/state.py read-ids tmp/initiative-speedrun-all-ids.txt
 Invoke auto-fix using the **Skill** tool (NOT Agent — Agent runs in background and causes the session to terminate). Build the args from the config file:
 
 ```
-Skill(skill: "initiative.auto-fix", args: "--headless --announce-complete --batch-size <batch_size> <all_IDs_from_file>")
+Skill(skill: "initiative-auto-fix", args: "--headless --announce-complete --batch-size <batch_size> <all_IDs_from_file>")
 ```
 
 Pass `--headless` and `--announce-complete` through if set in the config. **Always** pass `--batch-size <batch_size>` using the value from `tmp/initiative-speedrun-config.yaml` — never omit it, never let auto-fix's own default take over. The speedrun default (5) was already pinned in Step 0; relying on it here is what makes runs reproducible.
@@ -136,7 +136,7 @@ python3 scripts/check_autofix_complete.py --type initiative
 If incomplete (exit code 1), the output shows `MISSING_IDS=RHOAIENG-1234,INIT-002,...`. Re-invoke auto-fix with the Skill tool using only the missing IDs:
 
 ```
-Skill(skill: "initiative.auto-fix", args: "--headless --batch-size <batch_size> <missing_IDs>")
+Skill(skill: "initiative-auto-fix", args: "--headless --batch-size <batch_size> <missing_IDs>")
 ```
 
 Repeat the verify+retry cycle until all Initiatives have reviews or 3 retries have been exhausted.
@@ -168,10 +168,10 @@ If no IDs are ready to submit, skip to Phase 4.
 If IDs are ready, invoke submit using the **Skill** tool:
 
 ```
-Skill(skill: "initiative.submit", args: "--dry-run --headless <passing_IDs>")
+Skill(skill: "initiative-submit", args: "--dry-run --headless <passing_IDs>")
 ```
 
-Pass `--dry-run` and `--headless` through if set in the config. If not headless, `/initiative.submit` will show a confirmation table before writing to Jira — this is the one mandatory interaction point.
+Pass `--dry-run` and `--headless` through if set in the config. If not headless, `/initiative-submit` will show a confirmation table before writing to Jira — this is the one mandatory interaction point.
 
 ## Phase 4: Summary
 

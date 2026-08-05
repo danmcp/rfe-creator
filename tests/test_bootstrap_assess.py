@@ -171,7 +171,7 @@ class TestCallersDeclareType:
     def test_initiative_skills_pass_type_initiative(self):
         missing = []
         for path in self._skill_files():
-            if "initiative." not in path:
+            if "initiative-" not in path:
                 continue
             for line in self._bootstrap_lines(path):
                 if "--type initiative" not in line:
@@ -184,7 +184,7 @@ class TestCallersDeclareType:
         found = [
             path
             for path in self._skill_files()
-            if "initiative." in path and self._bootstrap_lines(path)
+            if "initiative-" in path and self._bootstrap_lines(path)
         ]
         assert len(found) >= 3
 

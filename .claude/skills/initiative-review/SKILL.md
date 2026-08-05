@@ -1,6 +1,6 @@
 ---
-name: initiative.review
-description: Review and improve Initiatives. Accepts one or more Jira keys (e.g., /initiative.review RHOAIENG-12345) to fetch and review existing Initiatives, or reviews local artifacts from /initiative.create.
+name: initiative-review
+description: Review and improve Initiatives. Accepts one or more Jira keys (e.g., /initiative-review RHOAIENG-12345) to fetch and review existing Initiatives, or reviews local artifacts from /initiative-create.
 user-invocable: true
 allowed-tools: Glob, Bash, Agent, AskUserQuestion
 ---
@@ -35,7 +35,7 @@ For each ID, check if `artifacts/initiatives/<id>.md` already exists locally (us
 For each remote ID, launch a **fetch agent** (model: opus, run_in_background: true):
 
 ```
-Read .claude/skills/initiative.review/prompts/fetch-agent.md and follow all instructions. Substitute {KEY} with <ID> throughout.
+Read .claude/skills/initiative-review/prompts/fetch-agent.md and follow all instructions. Substitute {KEY} with <ID> throughout.
 ```
 
 Write IDs to poll file once, then poll using `NEXT_POLL` interval:
@@ -82,7 +82,7 @@ python3 scripts/prep_assess.py <ID>
 **Launch assess agent** (model: opus, run_in_background: true, subagent_type: initiative-scorer):
 
 ```
-Read .claude/skills/initiative.review/prompts/assess-agent.md and follow all instructions. Substitute: {KEY}=<ID>, {DATA_FILE}=tmp/rfe-assess/single/<ID>.md, {RUN_DIR}=tmp/rfe-assess/single, {PROMPT_PATH}=.context/assess-rfe/skills/assess-initiative/scripts/agent_prompt.md
+Read .claude/skills/initiative-review/prompts/assess-agent.md and follow all instructions. Substitute: {KEY}=<ID>, {DATA_FILE}=tmp/rfe-assess/single/<ID>.md, {RUN_DIR}=tmp/rfe-assess/single, {PROMPT_PATH}=.context/assess-rfe/skills/assess-initiative/scripts/agent_prompt.md
 ```
 
 **Launch feasibility agent** (model: opus, run_in_background: true) — one per ID:
@@ -141,7 +141,7 @@ Remove failed IDs from the processing list and continue with remaining IDs.
 For each remaining ID, launch a **review agent** (model: opus, run_in_background: true):
 
 ```
-Read .claude/skills/initiative.review/prompts/review-agent.md and follow all instructions. Substitute: {ID}=<ID>, {ASSESS_PATH}=tmp/rfe-assess/single/<ID>.result.md, {FEASIBILITY_PATH}=artifacts/initiative-reviews/<ID>-feasibility.md, {ALIGNMENT_PATH}=artifacts/initiative-reviews/<ID>-alignment.md, {FIRST_PASS}=true
+Read .claude/skills/initiative-review/prompts/review-agent.md and follow all instructions. Substitute: {ID}=<ID>, {ASSESS_PATH}=tmp/rfe-assess/single/<ID>.result.md, {FEASIBILITY_PATH}=artifacts/initiative-reviews/<ID>-feasibility.md, {ALIGNMENT_PATH}=artifacts/initiative-reviews/<ID>-alignment.md, {FIRST_PASS}=true
 ```
 
 Launch all review agents in parallel.
@@ -174,7 +174,7 @@ The script outputs the IDs that need revision (filters out passing, infeasible, 
 Launch a **revise agent** (model: opus, run_in_background: true) for each ID returned:
 
 ```
-Read .claude/skills/initiative.review/prompts/revise-agent.md and follow all instructions. Substitute: {ID}=<ID>
+Read .claude/skills/initiative-review/prompts/revise-agent.md and follow all instructions. Substitute: {ID}=<ID>
 ```
 
 Launch all revise agents in parallel.
@@ -251,7 +251,7 @@ python3 scripts/prep_assess.py <ID>
 Launch an **assess agent** (model: opus, run_in_background: true, subagent_type: initiative-scorer) for each reassess ID:
 
 ```
-Read .claude/skills/initiative.review/prompts/assess-agent.md and follow all instructions. Substitute: {KEY}=<ID>, {DATA_FILE}=tmp/rfe-assess/single/<ID>.md, {RUN_DIR}=tmp/rfe-assess/single, {PROMPT_PATH}=.context/assess-rfe/skills/assess-initiative/scripts/agent_prompt.md
+Read .claude/skills/initiative-review/prompts/assess-agent.md and follow all instructions. Substitute: {KEY}=<ID>, {DATA_FILE}=tmp/rfe-assess/single/<ID>.md, {RUN_DIR}=tmp/rfe-assess/single, {PROMPT_PATH}=.context/assess-rfe/skills/assess-initiative/scripts/agent_prompt.md
 ```
 
 Launch all assess agents in parallel.
@@ -274,7 +274,7 @@ python3 scripts/state.py read-ids tmp/initiative-review-reassess-ids.txt
 For each reassess ID, launch a **review agent** (model: opus, run_in_background: true):
 
 ```
-Read .claude/skills/initiative.review/prompts/review-agent.md and follow all instructions. Substitute: {ID}=<ID>, {ASSESS_PATH}=tmp/rfe-assess/single/<ID>.result.md, {FEASIBILITY_PATH}=artifacts/initiative-reviews/<ID>-feasibility.md, {ALIGNMENT_PATH}=artifacts/initiative-reviews/<ID>-alignment.md, {FIRST_PASS}=false
+Read .claude/skills/initiative-review/prompts/review-agent.md and follow all instructions. Substitute: {ID}=<ID>, {ASSESS_PATH}=tmp/rfe-assess/single/<ID>.result.md, {FEASIBILITY_PATH}=artifacts/initiative-reviews/<ID>-feasibility.md, {ALIGNMENT_PATH}=artifacts/initiative-reviews/<ID>-alignment.md, {FIRST_PASS}=false
 ```
 
 Launch all review agents in parallel.
@@ -320,7 +320,7 @@ Re-read flags (in case context was compressed):
 python3 scripts/state.py read tmp/initiative-review-config.yaml
 ```
 
-**If `headless: true`**: Output the text "initiative.review step completed." then run:
+**If `headless: true`**: Output the text "initiative-review step completed." then run:
 
 ```bash
 python3 scripts/state.py read tmp/initiative-review-config.yaml
@@ -328,7 +328,7 @@ python3 scripts/state.py read tmp/initiative-split-config.yaml 2>/dev/null; true
 ```
 
 Check the `caller` field above:
-- **`split`**: Returning to **Split Step 3: Right-sizing Self-Correction** of `/initiative.split`. Re-read parent IDs from `tmp/initiative-split-all-ids.txt`. If the split config is not visible, re-read `/initiative.split` SKILL.md for the full flow.
+- **`split`**: Returning to **Split Step 3: Right-sizing Self-Correction** of `/initiative-split`. Re-read parent IDs from `tmp/initiative-split-all-ids.txt`. If the split config is not visible, re-read `/initiative-split` SKILL.md for the full flow.
 
 Do not summarize or stop.
 
@@ -339,9 +339,9 @@ python3 scripts/batch_summary.py --type initiative --ids-file tmp/initiative-rev
 ```
 
 Based on the output:
-- **All pass**: Tell the user Initiatives are ready for `/initiative.submit`.
-- **Some need revision**: List the remaining issues (from summary output). Tell the user to edit artifacts and re-run `/initiative.review`.
-- **Some recommend split**: Tell the user to run `/initiative.split <ID>` for those IDs.
+- **All pass**: Tell the user Initiatives are ready for `/initiative-submit`.
+- **Some need revision**: List the remaining issues (from summary output). Tell the user to edit artifacts and re-run `/initiative-review`.
+- **Some recommend split**: Tell the user to run `/initiative-split <ID>` for those IDs.
 - **Errors**: Report which IDs had errors and suggest retrying.
 
 $ARGUMENTS

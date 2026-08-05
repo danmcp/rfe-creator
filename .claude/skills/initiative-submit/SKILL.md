@@ -1,6 +1,6 @@
 ---
-name: initiative.submit
-description: Submit or update Initiatives in Jira. Creates new RHOAIENG Initiative tickets for new Initiatives, or updates existing tickets. Use after /initiative.review.
+name: initiative-submit
+description: Submit or update Initiatives in Jira. Creates new RHOAIENG Initiative tickets for new Initiatives, or updates existing tickets. Use after /initiative-review.
 user-invocable: true
 allowed-tools: Read, Write, Edit, Glob, Grep, Bash
 ---
@@ -9,7 +9,7 @@ You are an Initiative submission assistant. Your job is to create or update RHOA
 
 All submission goes through `scripts/submit.py --type initiative` which uses the Jira REST API directly with Basic Auth (`JIRA_SERVER`, `JIRA_USER`, `JIRA_TOKEN` env vars).
 
-**This skill is non-interactive.** Do not prompt the user for confirmation before submitting. The user invoked `/initiative.submit` — that is the confirmation.
+**This skill is non-interactive.** Do not prompt the user for confirmation before submitting. The user invoked `/initiative-submit` — that is the confirmation.
 
 ## Step 0: Check Credentials
 
@@ -22,7 +22,7 @@ Check if `JIRA_SERVER`, `JIRA_USER`, and `JIRA_TOKEN` environment variables are 
 > export JIRA_TOKEN=your-api-token
 > ```
 >
-> After environment variables are set, re-run `/initiative.submit`.
+> After environment variables are set, re-run `/initiative-submit`.
 
 ## Step 1: Run Submission
 

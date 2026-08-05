@@ -1,5 +1,5 @@
 ---
-name: initiative.create
+name: initiative-create
 description: Write a new Initiative from an objective or strategic goal. Asks clarifying questions, then produces a well-formed Initiative for the RHOAIENG project.
 user-invocable: true
 allowed-tools: Read, Write, Edit, Glob, Grep, Bash, AskUserQuestion
@@ -78,8 +78,8 @@ Create the `artifacts/`, `artifacts/initiatives/`, and `artifacts/initiative-rev
 
 Tell the user they can:
 - Edit any artifact file directly before proceeding
-- Run `/initiative.review` to validate the Initiative
-- Re-run `/initiative.create` to start over from scratch
+- Run `/initiative-review` to validate the Initiative
+- Re-run `/initiative-create` to start over from scratch
 
 ## What NOT to Do
 

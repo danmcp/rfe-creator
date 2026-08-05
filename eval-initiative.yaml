@@ -1,6 +1,6 @@
 name: initiative-speedrun
 description: End-to-end Initiative pipeline — create, review, auto-fix, split, and submit Initiatives
-skill: initiative.speedrun
+skill: initiative-speedrun
 
 # Execution — how the skill processes test cases (runner-agnostic)
 execution:
@@ -59,7 +59,7 @@ inputs:
   tools:
     - match: |
         Questions asked to the user via AskUserQuestion — typically
-        clarifying questions during initiative.create (objective, problem,
+        clarifying questions during initiative-create (objective, problem,
         scope, parent outcome).
       prompt: |
         Answer based on the test case context in input.yaml.
@@ -305,9 +305,9 @@ judges:
               last_line = tb_text.strip().split('\n')[-1]
               errors.append(f"Fatal traceback: {last_line[:120]}")
       phases_found = []
-      if "initiative.create" in stdout.lower() or "Phase 1" in stdout:
+      if "initiative-create" in stdout.lower() or "Phase 1" in stdout:
           phases_found.append("create")
-      if "auto-fix" in stdout.lower() or "initiative.auto-fix" in stdout.lower():
+      if "auto-fix" in stdout.lower() or "initiative-auto-fix" in stdout.lower():
           phases_found.append("auto-fix")
       if "submit" in stdout.lower() or "Phase 3" in stdout:
           phases_found.append("submit")

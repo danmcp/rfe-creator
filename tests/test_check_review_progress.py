@@ -838,15 +838,15 @@ class TestSkillBarrierUsage:
         assert not unknown, f"unknown poll phases: {unknown}"
 
     def test_initiative_review_polls_as_much_as_rfe_review(self):
-        """initiative.review is a fork of rfe.review — it must not lose barriers."""
+        """initiative-review is a fork of rfe.review — it must not lose barriers."""
         rfe = _skill_text("rfe.review")
-        init = _skill_text("initiative.review")
+        init = _skill_text("initiative-review")
         assert len(_phases_used(init)) >= len(_phases_used(rfe))
         assert init.count("NEXT_POLL") >= rfe.count("NEXT_POLL")
 
     def test_initiative_split_polls_as_much_as_rfe_split(self):
         """Same guard for the split pair."""
         rfe = _skill_text("rfe.split")
-        init = _skill_text("initiative.split")
+        init = _skill_text("initiative-split")
         assert len(_phases_used(init)) >= len(_phases_used(rfe))
         assert init.count("NEXT_POLL") >= rfe.count("NEXT_POLL")

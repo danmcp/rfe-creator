@@ -1,6 +1,6 @@
 ---
-name: initiative.split
-description: Split oversized Initiatives into smaller, focused Initiatives. Accepts one or more IDs (e.g., /initiative.split RHOAIENG-1234 INIT-001). Runs non-interactively — decomposes, generates new Initiatives, reviews them, self-corrects, and checks coverage.
+name: initiative-split
+description: Split oversized Initiatives into smaller, focused Initiatives. Accepts one or more IDs (e.g., /initiative-split RHOAIENG-1234 INIT-001). Runs non-interactively — decomposes, generates new Initiatives, reviews them, self-corrects, and checks coverage.
 user-invocable: true
 allowed-tools: Glob, Bash, Agent, Skill, AskUserQuestion
 ---
@@ -19,7 +19,7 @@ Persist parsed flags (survives context compression):
 python3 scripts/state.py init tmp/initiative-split-config.yaml headless=<true/false>
 ```
 
-If no arguments provided, stop with: "Usage: `/initiative.split <ID> [ID2 ...]`. Provide one or more Initiative IDs."
+If no arguments provided, stop with: "Usage: `/initiative-split <ID> [ID2 ...]`. Provide one or more Initiative IDs."
 
 Persist all IDs to disk (survives context compression):
 
@@ -34,7 +34,7 @@ For each ID, verify the task file exists via Glob (`artifacts/initiatives/<ID>.m
 For each ID, launch a **split agent** (model: opus, run_in_background: true):
 
 ```
-Read .claude/skills/initiative.split/prompts/split-agent.md and follow all instructions. Substitute: {ID}=<ID>, {TASK_FILE}=artifacts/initiatives/<ID>.md, {REVIEW_FILE}=artifacts/initiative-reviews/<ID>-review.md
+Read .claude/skills/initiative-split/prompts/split-agent.md and follow all instructions. Substitute: {ID}=<ID>, {TASK_FILE}=artifacts/initiatives/<ID>.md, {REVIEW_FILE}=artifacts/initiative-reviews/<ID>-review.md
 ```
 
 Launch all split agents in parallel.
@@ -76,10 +76,10 @@ python3 scripts/collect_children.py --type initiative <split_IDs>
 
 Parse the output to get all child Initiative IDs. If any parent has zero children despite `action: split`, treat it as a no-split and update its recommendation to `revise`.
 
-If there are children to review, invoke `/initiative.review` as an inline Skill, passing `--headless` through if present:
+If there are children to review, invoke `/initiative-review` as an inline Skill, passing `--headless` through if present:
 
 ```
-/initiative.review [--headless] --caller split <child_ID_1> <child_ID_2> ...
+/initiative-review [--headless] --caller split <child_ID_1> <child_ID_2> ...
 ```
 
 This triggers the full agent delegation review pipeline on all children.
@@ -94,7 +94,7 @@ Initialize the correction cycle counter on disk (set-default is safe if compress
 python3 scripts/state.py set-default tmp/initiative-split-config.yaml correction_cycle=0
 ```
 
-After `/initiative.review` completes on children, re-read config and parent IDs (context compression may have lost them):
+After `/initiative-review` completes on children, re-read config and parent IDs (context compression may have lost them):
 
 ```bash
 python3 scripts/state.py read tmp/initiative-split-config.yaml
@@ -117,7 +117,7 @@ If any child has `recommendation=split` (indicating its scope is still too broad
 1. **Re-split**: Launch a split agent for the offending child (same prompt as Split Step 1)
 2. **Wait** for the agent to complete
 3. **Collect new children**: `python3 scripts/collect_children.py --type initiative <re-split_ID>`
-4. **Review new children**: Invoke `/initiative.review [--headless] --caller split <new_child_IDs>`
+4. **Review new children**: Invoke `/initiative-review [--headless] --caller split <new_child_IDs>`
 5. **Check again**: Read review results for new children
 
 After each cycle, increment the counter on disk:
@@ -128,7 +128,7 @@ python3 scripts/state.py set tmp/initiative-split-config.yaml correction_cycle=<
 
 Re-read config before starting the next cycle to check the counter. Stop after 1 cycle and report remaining scope concerns.
 
-**Do not re-split for non-Scope criteria.** This loop only corrects scope issues caught by the review agent's `split` recommendation. Other criteria are handled by `/initiative.review`'s auto-revision.
+**Do not re-split for non-Scope criteria.** This loop only corrects scope issues caught by the review agent's `split` recommendation. Other criteria are handled by `/initiative-review`'s auto-revision.
 
 ## Split Step 4: Finalize
 
@@ -138,7 +138,7 @@ Re-read flags (in case context was compressed):
 python3 scripts/state.py read tmp/initiative-split-config.yaml
 ```
 
-**If `headless: true`**: Output the text "initiative.split step completed." and stop.
+**If `headless: true`**: Output the text "initiative-split step completed." and stop.
 
 **If interactive (no `--headless`)**: Present the final state for each parent ID:
 
@@ -157,7 +157,7 @@ Review: All new Initiatives passed
 For IDs where `action: no-split`, report the reason (e.g., tightly-coupled-workstreams).
 
 Tell the user they can:
-- Run `/initiative.submit` to create or update tickets in Jira
-- Edit any new Initiative in `artifacts/initiatives/` and re-run `/initiative.review`
+- Run `/initiative-submit` to create or update tickets in Jira
+- Edit any new Initiative in `artifacts/initiatives/` and re-run `/initiative-review`
 
 $ARGUMENTS

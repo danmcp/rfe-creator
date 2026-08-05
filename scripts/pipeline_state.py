@@ -2,7 +2,7 @@
 """Pipeline state machine for the thin dispatcher.
 
 Phase tracking, config, and transition logic for rfe.auto-fix and
-initiative.auto-fix.
+initiative-auto-fix.
 
 Usage:
     python3 scripts/pipeline_state.py init [--type rfe|initiative] [--batch-size N]
@@ -105,15 +105,15 @@ PIPELINE_TYPES = {
         "poll_prefix": "",
     },
     "initiative": {
-        "review_prompts": ".claude/skills/initiative.review/prompts",
-        "split_prompt": ".claude/skills/initiative.split/prompts/split-agent.md",
+        "review_prompts": ".claude/skills/initiative-review/prompts",
+        "split_prompt": ".claude/skills/initiative-split/prompts/split-agent.md",
         "scorer_type": "initiative-scorer",
         "rubric_path": ".context/assess-rfe/skills/assess-initiative/scripts/agent_prompt.md",
         "feasibility_skill": ".claude/skills/initiative-feasibility-review/SKILL.md",
         "alignment_skill": ".claude/skills/strategic-alignment-review/SKILL.md",
         "tasks_dir": "artifacts/initiatives",
         "reviews_dir": "artifacts/initiative-reviews",
-        "dispatch_skill": ".claude/skills/initiative.auto-fix/SKILL.md",
+        "dispatch_skill": ".claude/skills/initiative-auto-fix/SKILL.md",
         "poll_prefix": "initiative-",
     },
 }

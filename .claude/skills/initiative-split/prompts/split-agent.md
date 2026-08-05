@@ -85,7 +85,7 @@ Then proceed immediately with the recommended decomposition.
 
 Using the recommended decomposition:
 
-1. Read the Initiative template from `.claude/skills/initiative.create/initiative-template.md`
+1. Read the Initiative template from `.claude/skills/initiative-create/initiative-template.md`
 2. Each new Initiative must be a **coherent, standalone body of work** — not just a slice of scope items. It needs its own objective, problem statement, scope, and success criteria.
 3. Carry forward from the original:
    - Problem statement context (tailor to each child's specific scope)

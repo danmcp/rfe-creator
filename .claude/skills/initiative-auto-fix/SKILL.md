@@ -1,5 +1,5 @@
 ---
-name: initiative.auto-fix
+name: initiative-auto-fix
 description: Review and fix batches of Initiatives automatically. Accepts explicit IDs or a JQL query. Reviews, auto-revises, and splits oversized Initiatives. Non-interactive.
 user-invocable: true
 allowed-tools: Glob, Bash, Agent
@@ -120,7 +120,7 @@ phase: ASSESS
 message: "ASSESS: wave 1/2 (5 IDs)"
 agents:
   - subagent_type: initiative-scorer
-    prompt_file: .claude/skills/initiative.review/prompts/assess-agent.md
+    prompt_file: .claude/skills/initiative-review/prompts/assess-agent.md
     vars: |
       DATA_FILE=tmp/rfe-assess/single/RHOAIENG-1234.md
       RUN_DIR=tmp/rfe-assess/single

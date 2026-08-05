@@ -83,9 +83,9 @@ During evaluation, PreToolUse hooks:
 
 ---
 
-# Evaluation — initiative.speedrun
+# Evaluation — initiative-speedrun
 
-Automated evaluation of the `initiative.speedrun` pipeline using the [agent-eval-harness](https://github.com/opendatahub-io/agent-eval-harness).
+Automated evaluation of the `initiative-speedrun` pipeline using the [agent-eval-harness](https://github.com/opendatahub-io/agent-eval-harness).
 
 ## Quick Start
 
@@ -99,7 +99,7 @@ Automated evaluation of the `initiative.speedrun` pipeline using the [agent-eval
 
 ## How it works
 
-The evaluation runs the `initiative.speedrun` skill headlessly against 16 test cases derived from real RHOAIENG Jira initiatives. Each test case provides an objective (prompt + clarifying context), and the pipeline creates, reviews (with assessment, feasibility, and strategic alignment), auto-fixes, and (dry-run) submits Initiatives.
+The evaluation runs the `initiative-speedrun` skill headlessly against 16 test cases derived from real RHOAIENG Jira initiatives. Each test case provides an objective (prompt + clarifying context), and the pipeline creates, reviews (with assessment, feasibility, and strategic alignment), auto-fixes, and (dry-run) submits Initiatives.
 
 ### Configuration
 
