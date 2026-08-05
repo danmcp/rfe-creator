@@ -17,6 +17,10 @@ from artifact_utils import read_frontmatter
 
 PHASE_CHECKS = {
     "fetch": lambda id: f"artifacts/rfe-tasks/{id}.md",
+    # Same path as "fetch", but a stricter check — see check_id(). Create agents
+    # write the task file first and set frontmatter in a later tool call, so
+    # existence alone would release the barrier mid-write.
+    "create": lambda id: f"artifacts/rfe-tasks/{id}.md",
     "assess": lambda id: f"tmp/rfe-assess/single/{id}.result.md",
     "feasibility": lambda id: f"artifacts/rfe-reviews/{id}-feasibility.md",
     "review": lambda id: f"artifacts/rfe-reviews/{id}-review.md",
@@ -37,6 +41,16 @@ def check_id(phase, rfe_id):
     path = PHASE_CHECKS[phase](rfe_id)
     if not os.path.exists(path):
         return "pending"
+    if phase == "create":
+        try:
+            data, _ = read_frontmatter(path)
+        except Exception:
+            return "error"
+        # read_frontmatter returns {} for a file with no frontmatter block yet,
+        # which is a half-written file, not a finished one.
+        if not data or not data.get("rfe_id"):
+            return "pending"
+        return "completed"
     if phase in ("review", "initiative-review"):
         try:
             data, _ = read_frontmatter(path)

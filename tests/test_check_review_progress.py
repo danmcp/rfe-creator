@@ -151,6 +151,69 @@ class TestCheckId:
             assert check_id("revise", "RHAIRFE-1") == "error"
 
 
+class TestCreatePhase:
+    """The create phase is the Phase 1 barrier in /rfe.speedrun.
+
+    Create agents write the task file first and set frontmatter in a later tool
+    call, so this phase deliberately checks more than existence — releasing the
+    barrier mid-write is what leaves the pipeline with unusable task files.
+    """
+
+    def test_missing_file_is_pending(self, tmp_path):
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"create": lambda id: str(tmp_path / f"{id}.md")},
+        ):
+            assert check_id("create", "RFE-001") == "pending"
+
+    def test_valid_frontmatter_is_completed(self, tmp_path):
+        f = tmp_path / "RFE-001.md"
+        f.write_text("---\nrfe_id: RFE-001\ntitle: A need\n---\nBody\n")
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"create": lambda id: str(tmp_path / f"{id}.md")},
+        ):
+            assert check_id("create", "RFE-001") == "completed"
+
+    def test_file_without_frontmatter_is_pending(self, tmp_path):
+        """The agent wrote the file but has not run frontmatter.py set yet."""
+        f = tmp_path / "RFE-001.md"
+        f.write_text("# A need\n\nSome body text.\n")
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"create": lambda id: str(tmp_path / f"{id}.md")},
+        ):
+            assert check_id("create", "RFE-001") == "pending"
+
+    def test_frontmatter_without_rfe_id_is_pending(self, tmp_path):
+        f = tmp_path / "RFE-001.md"
+        f.write_text("---\ntitle: A need\n---\nBody\n")
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"create": lambda id: str(tmp_path / f"{id}.md")},
+        ):
+            assert check_id("create", "RFE-001") == "pending"
+
+    def test_empty_frontmatter_is_pending(self, tmp_path):
+        f = tmp_path / "RFE-001.md"
+        f.write_text("---\n---\nBody\n")
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"create": lambda id: str(tmp_path / f"{id}.md")},
+        ):
+            assert check_id("create", "RFE-001") == "pending"
+
+    def test_unparseable_frontmatter_is_error(self, tmp_path):
+        """An error is surfaced rather than waited on — retrying won't fix it."""
+        f = tmp_path / "RFE-001.md"
+        f.write_text("---\n: bad yaml [[\n---\nBody\n")
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"create": lambda id: str(tmp_path / f"{id}.md")},
+        ):
+            assert check_id("create", "RFE-001") == "error"
+
+
 # ── _check_phase ──
 
 
