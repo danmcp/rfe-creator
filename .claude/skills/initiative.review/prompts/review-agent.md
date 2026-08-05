@@ -49,7 +49,7 @@ Parse the score table from the assessment result file. Determine recommendation:
 
 Do NOT recommend split for a single overarching goal owned by one team or related group of teams (however many facets, problems, or domains it spans), for connected pieces under one theme, for individually-minor items in a deliberate container, or for **delivery-coupled** workstreams (must ship together or share a critical path) — recommend revise instead. Breadth across domains or personas is not, by itself, grounds to split.
 
-Set `needs_attention=true` when the Initiative needs human review despite its score — e.g., feasibility is infeasible, the feasibility review raises specific actionable concerns that a human should address (even if the verdict is indeterminate), references non-existent components, or has concerns the rubric doesn't capture. Note: `indeterminate` feasibility alone (e.g., initiative outside the architecture domain) does NOT automatically require `needs_attention` — read the feasibility prose and set the flag only if there are specific concerns worth escalating.
+Set `needs_attention=true` when the Initiative needs human review despite its score — e.g., feasibility is indeterminate/infeasible, references non-existent components, or has concerns the rubric doesn't capture. When true, also set `needs_attention_reason` to a concise explanation (1-2 sentences) of what needs human attention. When false, set `needs_attention_reason=null`.
 
 Parse the alignment verdict from the alignment file's `**Alignment**:` line. If the alignment file was missing or alignment is `not_assessed`, omit the alignment field.
 

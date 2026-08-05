@@ -167,9 +167,18 @@ def main():
             split_status = f"{tc['reviews_dir']}/{rfe_id}-split-status.yaml"
             if os.path.exists(split_status):
                 os.remove(split_status)
-            # Clean children via cleanup_partial_split.py
+            # Clean children via cleanup_partial_split.py. Without --type it
+            # defaults to rfe and would scan rfe-tasks/ for an initiative's
+            # children, finding none and leaving them orphaned.
             subprocess.run(
-                ["python3", "scripts/cleanup_partial_split.py", rfe_id], capture_output=True
+                [
+                    "python3",
+                    "scripts/cleanup_partial_split.py",
+                    rfe_id,
+                    "--type",
+                    pipeline_type,
+                ],
+                capture_output=True,
             )
 
     # Step 6: Post-cleanup verification
@@ -189,12 +198,17 @@ def main():
             print(w, file=sys.stderr)
 
     # Step 7: Write retry batch file (idempotent guard)
-    total = state.get("total_batches", 0)
-    retry_batch_file = f"tmp/pipeline-batch-{total + 1}-ids.txt"
-    if not os.path.exists(retry_batch_file):
-        state["total_batches"] = total + 1
+    # Keyed on the batch number recorded in state, not on the derived filename.
+    # total_batches is bumped before the file is written, so re-deriving it on a
+    # re-run points at the NEXT slot: the guard sees no file there, allocates a
+    # second retry batch, and leaves the first one empty.
+    retry_batch = state.get("retry_batch")
+    if retry_batch is None:
+        retry_batch = state.get("total_batches", 0) + 1
+        state["retry_batch"] = retry_batch
+        state["total_batches"] = retry_batch
         _save_state(state)
-        _write_ids(retry_batch_file, error_ids)
+    _write_ids(f"tmp/pipeline-batch-{retry_batch}-ids.txt", error_ids)
 
     print(f"ERROR_COLLECT: retry batch with {len(error_ids)} error IDs [{', '.join(error_ids)}]")
     for rfe_id, details in error_details.items():

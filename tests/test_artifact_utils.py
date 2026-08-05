@@ -15,6 +15,7 @@ from artifact_utils import (
     apply_defaults,
     read_frontmatter,
     read_frontmatter_validated,
+    rename_initiative_to_jira_key,
     update_frontmatter,
     validate,
     write_frontmatter,
@@ -398,3 +399,53 @@ class TestInitiativeFrontmatter:
         data, _ = read_frontmatter("init-review.md")
         assert data["auto_revised"] is True
         assert data["initiative_id"] == "INIT-001"
+
+
+class TestRenameInitiativeToJiraKey:
+    """Companion files must be renamed as companions, not as the task file.
+
+    Every unmatched name falls through to `{jira_key}.md` — the main task
+    file's new name — so a missed companion silently overwrites it.
+    """
+
+    def _setup(self, tmp_dir, extra_files=()):
+        os.makedirs("artifacts/initiatives")
+        os.makedirs("artifacts/initiative-reviews")
+        write_frontmatter(
+            "artifacts/initiatives/INIT-001.md",
+            VALID_INITIATIVE_TASK_FM.copy(),
+            "initiative-task",
+        )
+        for name in extra_files:
+            with open(f"artifacts/initiatives/{name}", "w") as f:
+                f.write(f"contents of {name}\n")
+
+    def test_comments_companion_keeps_its_suffix(self, tmp_dir):
+        self._setup(tmp_dir, ["INIT-001-comments.md"])
+
+        rename_initiative_to_jira_key("artifacts", "INIT-001", "RHOAIENG-1234")
+
+        assert os.path.exists("artifacts/initiatives/RHOAIENG-1234-comments.md")
+        with open("artifacts/initiatives/RHOAIENG-1234-comments.md") as f:
+            assert f.read() == "contents of INIT-001-comments.md\n"
+
+    def test_task_file_survives_companion_rename(self, tmp_dir):
+        self._setup(tmp_dir, ["INIT-001-comments.md"])
+
+        rename_initiative_to_jira_key("artifacts", "INIT-001", "RHOAIENG-1234")
+
+        data, _ = read_frontmatter("artifacts/initiatives/RHOAIENG-1234.md")
+        assert data["initiative_id"] == "RHOAIENG-1234"
+        assert data["status"] == "Submitted"
+
+    def test_removed_context_companions_still_handled(self, tmp_dir):
+        self._setup(
+            tmp_dir,
+            ["INIT-001-removed-context.yaml", "INIT-001-removed-context.md"],
+        )
+
+        rename_initiative_to_jira_key("artifacts", "INIT-001", "RHOAIENG-1234")
+
+        assert os.path.exists("artifacts/initiatives/RHOAIENG-1234-removed-context.yaml")
+        assert os.path.exists("artifacts/initiatives/RHOAIENG-1234-removed-context.md")
+        assert os.path.exists("artifacts/initiatives/RHOAIENG-1234.md")

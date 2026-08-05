@@ -21,7 +21,7 @@ If the 1/2 score reflects delivery-coupled workstreams, write the split-status f
 ## Step 1.5: Load Rubric
 
 ```bash
-bash scripts/bootstrap-assess-rfe.sh
+bash scripts/bootstrap-assess-rfe.sh --type initiative
 ```
 
 Read the scoring rubric from `.context/assess-rfe/skills/assess-initiative/scripts/agent_prompt.md`. Find the **Right-sized** criterion and its calibration examples. This defines what "right-sized" means — use it to guide split proposals and verify each child Initiative would score 2/2 on Right-sized (single coherent effort).

@@ -329,6 +329,43 @@ class TestAutoApprove:
         assert rc == 0, stderr
         assert "Would transition to Approved" in stdout
 
+    def test_indeterminate_feasibility_no_transition(self, art_dir):
+        """Passing review but feasibility=indeterminate → no auto-approve.
+
+        Initiatives use the same gate as RFEs: an inconclusive feasibility read
+        is not a basis for transitioning a ticket to Approved.
+        """
+        _write(f"{art_dir}/initiatives/INIT-001.md", TASK_FM.format(initiative_id="INIT-001"))
+        _write(
+            f"{art_dir}/initiative-reviews/INIT-001-review.md",
+            _default_review("INIT-001").replace(
+                "feasibility: feasible", "feasibility: indeterminate"
+            ),
+        )
+
+        stdout, stderr, rc = _run_submit(art_dir, ["--auto-approve"])
+        assert rc == 0, stderr
+        assert "Would transition to Approved" not in stdout
+
+    def test_needs_attention_still_transitions(self, art_dir):
+        """needs_attention does not block auto-approve — it is advisory.
+
+        Same as the RFE path: the flag drives the needs-attention label, and
+        the transition gate is pass + feasible only.
+        """
+        _write(f"{art_dir}/initiatives/INIT-001.md", TASK_FM.format(initiative_id="INIT-001"))
+        _write(
+            f"{art_dir}/initiative-reviews/INIT-001-review.md",
+            _default_review("INIT-001").replace(
+                "needs_attention: false",
+                'needs_attention: true\nneeds_attention_reason: "Needs a human look."',
+            ),
+        )
+
+        stdout, stderr, rc = _run_submit(art_dir, ["--auto-approve"])
+        assert rc == 0, stderr
+        assert "Would transition to Approved" in stdout
+
 
 class TestGenerateReportFlag:
     def test_generate_report_without_timestamp_fails(self):

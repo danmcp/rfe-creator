@@ -6,7 +6,7 @@ initiative.auto-fix.
 
 Usage:
     python3 scripts/pipeline_state.py init [--type rfe|initiative] [--batch-size N]
-                                          [--max-concurrent N] [--headless]
+                                          [--headless]
     python3 scripts/pipeline_state.py get-phase
     python3 scripts/pipeline_state.py set-phase <PHASE>
     python3 scripts/pipeline_state.py get-phase-config
@@ -223,7 +223,7 @@ def _build_phase_config(pipeline_type):
         "SETUP": {
             "type": "script",
             "command": (
-                "bash scripts/bootstrap-assess-rfe.sh &"
+                f"bash scripts/bootstrap-assess-rfe.sh --type {pipeline_type} &"
                 " bash scripts/fetch-architecture-context.sh & wait"
             ),
         },
@@ -401,6 +401,24 @@ def _build_phase_config(pipeline_type):
 def _get_config(state):
     """Get PHASE_CONFIG for the pipeline type in the current state."""
     return _build_phase_config(state.get("type", "rfe"))
+
+
+def _wave_size(state, config):
+    """IDs to launch per wave for an agent phase.
+
+    Each ID costs 1 + n_parallel concurrent agents (the main agent plus its
+    parallel companions — feasibility, and alignment for initiatives), so
+    batch_size is spent as an agent budget rather than an ID count.
+
+    The division rounds UP: flooring strands a partial slot on every batch
+    that isn't an exact multiple of the divisor, which is what made small
+    batches crawl — a speedrun batch of 5 ran 2 IDs per wave for RFEs and 1
+    for initiatives. Rounding up costs at most n_parallel agents over budget
+    and keeps a small batch to a single wave more often.
+    """
+    batch_size = int(state.get("batch_size", 50))
+    n_parallel = len(config.get("parallel", []))
+    return max(1, -(-batch_size // (1 + n_parallel)))
 
 
 # ---------- State helpers ----------
@@ -720,7 +738,6 @@ def cmd_init(args):
     parser = argparse.ArgumentParser(prog="pipeline_state.py init")
     parser.add_argument("--type", choices=["rfe", "initiative"], default="rfe")
     parser.add_argument("--batch-size", type=int, default=50)
-    parser.add_argument("--max-concurrent", type=int, default=6)
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--announce-complete", action="store_true")
     opts = parser.parse_args(args)
@@ -739,17 +756,16 @@ def cmd_init(args):
         "headless": opts.headless,
         "announce_complete": opts.announce_complete,
         "batch_size": opts.batch_size,
-        "max_concurrent": opts.max_concurrent,
         "start_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "reassess_cycle": 0,
         "correction_cycle": 0,
         "retry_cycle": 0,
+        # Batch slot error_collect allocates for the retry pass. Recorded so a
+        # re-run refills that slot instead of allocating a second one.
+        "retry_batch": None,
     }
     _save_state(state)
-    print(
-        f"Initialized pipeline state: type={opts.type}"
-        f" batch_size={opts.batch_size} max_concurrent={opts.max_concurrent}"
-    )
+    print(f"Initialized pipeline state: type={opts.type} batch_size={opts.batch_size}")
 
 
 def cmd_get_phase(args):
@@ -778,9 +794,7 @@ def cmd_get_phase_config(args):
     if config.get("type") == "script":
         config.pop("ids_file", None)
     if config.get("type") == "agent":
-        max_concurrent = int(state.get("max_concurrent", state.get("batch_size", 50)))
-        n_parallel = len(config.get("parallel", []))
-        config["wave_size"] = max(1, max_concurrent // (1 + n_parallel))
+        config["wave_size"] = _wave_size(state, config)
     print(yaml.dump(config, default_flow_style=False, sort_keys=False), end="")
 
 
@@ -945,10 +959,7 @@ def cmd_next_action(args):
                 print(summary, file=sys.stderr)
                 continue
 
-            # Compute wave size
-            max_concurrent = int(state.get("max_concurrent", state.get("batch_size", 50)))
-            n_parallel = len(config.get("parallel", []))
-            wave_size = max(1, max_concurrent // (1 + n_parallel))
+            wave_size = _wave_size(state, config)
 
             wave_ids = remaining[:wave_size]
             wave_num = 1 + (len(all_ids) - len(remaining)) // wave_size

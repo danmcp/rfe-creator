@@ -39,7 +39,7 @@ in `.claude/agents/` before they're needed in Phase 2. The CREATE phase gives
 the background agent rescan time to register them.
 
 ```bash
-bash scripts/bootstrap-assess-rfe.sh
+bash scripts/bootstrap-assess-rfe.sh --type initiative
 ```
 
 If bootstrap fails, retry once. If the retry also fails, continue — auto-fix
@@ -82,10 +82,10 @@ python3 scripts/next_rfe_id.py --prefix INIT --dir artifacts/initiatives --from-
 For each entry, launch an Agent to invoke `/initiative.create`. Pass the pre-assigned ID so each Agent knows which ID to use:
 
 ```
-Agent for entry 1:  /initiative.create --headless --initiative-id INIT-001 [--parent <parent_key>] <prompt>
-Agent for entry 2:  /initiative.create --headless --initiative-id INIT-002 [--parent <parent_key>] <prompt>
+Agent for entry 1:  /initiative.create --headless --initiative-id INIT-001 [--priority <priority>] [--parent <parent_key>] <prompt>
+Agent for entry 2:  /initiative.create --headless --initiative-id INIT-002 [--priority <priority>] [--parent <parent_key>] <prompt>
 ...
-Agent for entry N:  /initiative.create --headless --initiative-id INIT-<N> [--parent <parent_key>] <prompt>
+Agent for entry N:  /initiative.create --headless --initiative-id INIT-<N> [--priority <priority>] [--parent <parent_key>] <prompt>
 ```
 
 Each entry is a single objective — `/initiative.create` must produce exactly one Initiative per invocation. Wait for all N agents to complete. You must have exactly N Initiative IDs — if fewer were created, retry the missing entries. **Never delete or re-create task files during Phase 1** — quality issues are addressed in Phase 2 (Auto-fix).

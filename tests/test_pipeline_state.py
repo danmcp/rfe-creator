@@ -1930,8 +1930,45 @@ class TestNextActionWaveSize:
         result = _run_next_action()
         assert result["action"] == "launch_wave"
         wave_ids = read_ids(ps.WAVE_IDS_FILE)
-        # wave_size = max(1, 4 // 2) = 2
+        # wave_size = ceil(4 / 2) = 2
         assert len(wave_ids) == 2
+
+
+class TestWaveSizeMath:
+    """batch_size is spent as an agent budget: 1 + n_parallel agents per ID.
+
+    RFE agent phases carry one parallel companion (feasibility) so the divisor
+    is 2; Initiative adds alignment, making it 3. The division rounds up so a
+    small batch does not strand a partial slot.
+    """
+
+    def _config(self, n_parallel):
+        return {"type": "agent", "parallel": [{}] * n_parallel}
+
+    def test_speedrun_batch_rounds_up_for_rfe(self):
+        """batch_size=5, divisor 2 → 3 IDs/wave, not the 2 that flooring gives."""
+        assert ps._wave_size({"batch_size": 5}, self._config(1)) == 3
+
+    def test_speedrun_batch_rounds_up_for_initiative(self):
+        """batch_size=5, divisor 3 → 2 IDs/wave, not the 1 that flooring gives."""
+        assert ps._wave_size({"batch_size": 5}, self._config(2)) == 2
+
+    def test_large_batch_is_not_capped(self):
+        """A direct auto-fix at batch_size=50 keeps full throughput."""
+        assert ps._wave_size({"batch_size": 50}, self._config(1)) == 25
+        assert ps._wave_size({"batch_size": 50}, self._config(2)) == 17
+
+    def test_no_parallel_companions_uses_whole_batch(self):
+        """Phases with no parallel agents spend the budget on IDs alone."""
+        assert ps._wave_size({"batch_size": 5}, self._config(0)) == 5
+
+    def test_never_returns_zero(self):
+        """A degenerate batch_size still launches one ID per wave."""
+        assert ps._wave_size({"batch_size": 0}, self._config(2)) == 1
+
+    def test_defaults_when_batch_size_absent(self):
+        """State written before batch_size existed falls back to 50."""
+        assert ps._wave_size({}, self._config(1)) == 25
 
 
 # ---------- wait-for-wave ----------

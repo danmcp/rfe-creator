@@ -490,11 +490,15 @@ def main():
         if review_data and review_data.get("needs_attention", False):
             attn_reason = review_data.get("needs_attention_reason")
 
+        # Both types gate on the same rule: only an explicitly feasible item
+        # auto-approves. An `indeterminate` verdict means the assessment was
+        # inconclusive, which is not a basis for transitioning a ticket to
+        # Approved on its own. `needs_attention` is advisory here — it drives
+        # the needs-attention label, not the transition.
         auto_approve = (
             review_data
             and review_data.get("pass", False)
-            and review_data.get("feasibility") != "infeasible"
-            and not review_data.get("needs_attention", False)
+            and review_data.get("feasibility") == "feasible"
         )
 
         # Skip rejected items
@@ -760,11 +764,20 @@ def main():
                     results[item_id] = f"{jira_prefix}DRY"
                 else:
                     create_kwargs = {}
-                    # Read parent_key from frontmatter for new items
+                    # Read parent_key from frontmatter for new items. Only a
+                    # Jira key can be sent as the parent — a local id (RFE-NNN
+                    # / INIT-NNN) names an item that does not exist in Jira,
+                    # and Jira rejects the create with a 400. Children of a
+                    # local split parent are created standalone instead. The
+                    # test excludes the local prefix rather than requiring
+                    # cfg["jira_prefix"], because an Initiative's parent is
+                    # legitimately a RHAISTRAT Outcome key.
                     task_fm, _ = read_frontmatter_validated(entry["task_path"], cfg["task_schema"])
                     pk = task_fm.get("parent_key")
-                    if pk:
+                    if pk and not pk.startswith(cfg["local_prefix"]):
                         create_kwargs["parent_key"] = pk
+                    elif pk:
+                        print(f"  {item_id}: Parent {pk} is not in Jira — creating without parent")
                     new_key = create_issue(
                         server,
                         user,

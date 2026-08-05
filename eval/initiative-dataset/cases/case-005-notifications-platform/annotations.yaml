@@ -8,7 +8,7 @@ expected_scores:
   why: null
   scope: null
   open_to_how: null
-  right_sized: 1
+  right_sized: 0
 expected_total: null
 known_issues:
   - 'Bundles two independent efforts: user notifications and compliance audit logging. Should split into 2.'

@@ -18,6 +18,7 @@
       "Bash(python3 scripts/frontmatter.py *)",
       "Bash(python3 scripts/fetch_issue.py *)",
       "Bash(bash scripts/bootstrap-assess-rfe.sh)",
+      "Bash(bash scripts/bootstrap-assess-rfe.sh *)",
       "Bash(bash scripts/fetch-architecture-context.sh)",
       "Bash(python3 scripts/prep_assess.py *)",
       "Bash(python3 .context/assess-rfe/scripts/check_progress.py *)",

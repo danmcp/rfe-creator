@@ -48,7 +48,7 @@ If no IDs and no JQL and not `--reprocess`, stop with usage instructions.
 ### 3. Bootstrap
 
 ```bash
-bash scripts/bootstrap-assess-rfe.sh
+bash scripts/bootstrap-assess-rfe.sh --type initiative
 ```
 
 Retry once on failure. If retry fails, stop: "bootstrap failed."

@@ -590,3 +590,48 @@ class TestAlignmentLabelIntegration:
         issues = jira.search("project = RHOAIENG")
         issue = jira.get(issues[0]["key"])
         assert expected_label in issue["fields"]["labels"]
+
+
+class TestParentKeyForwarding:
+    """An Initiative's parent is a RHAISTRAT Outcome, not a RHOAIENG key.
+
+    The local-id guard in submit.py therefore excludes `INIT-`, rather than
+    requiring the type's own jira_prefix, which would drop a valid parent.
+    """
+
+    TASK_WITH_PARENT = (
+        "---\ninitiative_id: INIT-001\ntitle: Test Initiative\n"
+        "priority: Major\nstatus: Ready\nparent_key: RHAISTRAT-1234\n---\n\nBody.\n"
+    )
+    TASK_WITH_LOCAL_PARENT = (
+        "---\ninitiative_id: INIT-002\ntitle: Test Initiative\n"
+        "priority: Major\nstatus: Ready\nparent_key: INIT-001\n---\n\nBody.\n"
+    )
+
+    def test_strategic_outcome_parent_is_forwarded(self, art_dir, jira):
+        """RHAISTRAT parent → sent to Jira as the parent field."""
+        jira.create("RHAISTRAT-1234", "Outcome", "Outcome body.")
+        _write(f"{art_dir}/initiatives/INIT-001.md", self.TASK_WITH_PARENT)
+        _write(f"{art_dir}/initiative-reviews/INIT-001-review.md", _review("INIT-001"))
+
+        r = _run_submit(art_dir, jira.url)
+        assert r.returncode == 0, r.stderr
+        assert "is not in Jira" not in r.stdout
+
+        issues = jira.search("project = RHOAIENG")
+        assert len(issues) == 1
+        parent = jira.get(issues[0]["key"])["fields"].get("parent")
+        assert parent and parent["key"] == "RHAISTRAT-1234"
+
+    def test_local_parent_is_not_forwarded(self, art_dir, jira):
+        """INIT- parent → dropped, Initiative created standalone."""
+        _write(f"{art_dir}/initiatives/INIT-002.md", self.TASK_WITH_LOCAL_PARENT)
+        _write(f"{art_dir}/initiative-reviews/INIT-002-review.md", _review("INIT-002"))
+
+        r = _run_submit(art_dir, jira.url)
+        assert r.returncode == 0, r.stderr
+
+        issues = jira.search("project = RHOAIENG")
+        assert len(issues) == 1
+        assert jira.get(issues[0]["key"])["fields"].get("parent") is None
+        assert "is not in Jira" in r.stdout

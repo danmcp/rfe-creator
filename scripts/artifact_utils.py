@@ -901,7 +901,13 @@ def rename_initiative_to_jira_key(artifacts_dir, initiative_id, jira_key):
 
             old_path = os.path.join(initiatives_dir, filename)
 
-            if filename.endswith("-removed-context.yaml"):
+            # Companions must be matched before the fallback: anything that
+            # reaches the else branch is renamed to {jira_key}.md, which is
+            # also the main task file's new name, so an unhandled companion
+            # silently overwrites it.
+            if filename.endswith("-comments.md"):
+                new_name = f"{jira_key}-comments.md"
+            elif filename.endswith("-removed-context.yaml"):
                 new_name = f"{jira_key}-removed-context.yaml"
             elif filename.endswith("-removed-context.md"):
                 new_name = f"{jira_key}-removed-context.md"

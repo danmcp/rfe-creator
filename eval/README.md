@@ -99,7 +99,7 @@ Automated evaluation of the `initiative.speedrun` pipeline using the [agent-eval
 
 ## How it works
 
-The evaluation runs the `initiative.speedrun` skill headlessly against 20 test cases derived from real RHOAIENG Jira initiatives. Each test case provides an objective (prompt + clarifying context), and the pipeline creates, reviews (with assessment, feasibility, and strategic alignment), auto-fixes, and (dry-run) submits Initiatives.
+The evaluation runs the `initiative.speedrun` skill headlessly against 16 test cases derived from real RHOAIENG Jira initiatives. Each test case provides an objective (prompt + clarifying context), and the pipeline creates, reviews (with assessment, feasibility, and strategic alignment), auto-fixes, and (dry-run) submits Initiatives.
 
 ### Configuration
 
@@ -108,14 +108,14 @@ The evaluation runs the `initiative.speedrun` skill headlessly against 20 test c
 
 ### Dataset
 
-`eval/initiative-dataset/cases/` contains 20 test cases, each with:
+`eval/initiative-dataset/cases/` contains 16 test cases, each with:
 
 | File | Purpose |
 |------|---------|
 | `input.yaml` | Skill input: `prompt`, `priority`, `clarifying_context` |
 | `annotations.yaml` | Expected scores, feasibility/recommendation/alignment expectations, test tags |
 
-Two cases with empty descriptions test sparse-input handling.
+One case (`case-012`, tagged `sparse-input`) provides minimal context to test sparse-input handling.
 
 ### Judges
 

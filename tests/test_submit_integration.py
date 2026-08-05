@@ -1453,3 +1453,41 @@ Looks good.
         issue = jira.get(issues[0]["key"])
         labels = issue["fields"]["labels"]
         assert not any("alignment" in label for label in labels)
+
+
+class TestLocalParentKey:
+    """A local parent id must never be sent to Jira as a parent field.
+
+    Auto-fix can split an RFE that has not been submitted yet, in which case
+    the children carry `parent_key: RFE-NNN`. That parent does not exist in
+    Jira, so forwarding it makes the create fail with a 400 and aborts submit.
+
+    The emulator silently drops an unknown parent instead of rejecting it, so
+    it cannot reproduce that 400 — the assertion that pins the fix is the
+    skip message, not the return code.
+    """
+
+    CHILD_TASK_TPL = (
+        "---\nrfe_id: RFE-{num:03d}\ntitle: Child RFE {num}\n"
+        "priority: Major\nstatus: Ready\nparent_key: RFE-001\n---\n\nChild {num} content.\n"
+    )
+
+    def test_children_of_local_parent_created_without_parent(self, art_dir, jira):
+        """Local RFE-001 parent → children created standalone, submit succeeds."""
+        _write(
+            f"{art_dir}/rfe-tasks/RFE-001.md",
+            TASK_FM.format(rfe_id="RFE-001").replace("status: Ready", "status: Archived"),
+        )
+        for num in (2, 3):
+            child_id = f"RFE-{num:03d}"
+            _write(f"{art_dir}/rfe-tasks/{child_id}.md", self.CHILD_TASK_TPL.format(num=num))
+            _write(f"{art_dir}/rfe-reviews/{child_id}-review.md", _review(child_id))
+
+        r = _run_submit(art_dir, jira.url)
+        assert r.returncode == 0, r.stderr
+
+        issues = jira.search("project = RHAIRFE")
+        assert len(issues) == 2
+        for issue in issues:
+            assert jira.get(issue["key"])["fields"].get("parent") is None
+        assert "is not in Jira" in r.stdout

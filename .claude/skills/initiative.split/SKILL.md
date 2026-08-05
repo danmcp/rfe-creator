@@ -79,7 +79,7 @@ Parse the output to get all child Initiative IDs. If any parent has zero childre
 If there are children to review, invoke `/initiative.review` as an inline Skill, passing `--headless` through if present:
 
 ```
-/initiative.review --caller split <child_ID_1> <child_ID_2> ...
+/initiative.review [--headless] --caller split <child_ID_1> <child_ID_2> ...
 ```
 
 This triggers the full agent delegation review pipeline on all children.
@@ -117,7 +117,7 @@ If any child has `recommendation=split` (indicating its scope is still too broad
 1. **Re-split**: Launch a split agent for the offending child (same prompt as Split Step 1)
 2. **Wait** for the agent to complete
 3. **Collect new children**: `python3 scripts/collect_children.py --type initiative <re-split_ID>`
-4. **Review new children**: Invoke `/initiative.review --caller split <new_child_IDs>`
+4. **Review new children**: Invoke `/initiative.review [--headless] --caller split <new_child_IDs>`
 5. **Check again**: Read review results for new children
 
 After each cycle, increment the counter on disk:
