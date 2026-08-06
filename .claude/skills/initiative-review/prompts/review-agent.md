@@ -51,15 +51,14 @@ Do NOT recommend split for a single overarching goal owned by one team or relate
 
 Set `needs_attention=true` when the Initiative needs human review despite its score — e.g., feasibility is indeterminate/infeasible, references non-existent components, or has concerns the rubric doesn't capture. When true, also set `needs_attention_reason` to a concise explanation (1-2 sentences) of what needs human attention. When false, set `needs_attention_reason=null`.
 
-Parse the alignment verdict from the alignment file's `**Alignment**:` line. If the alignment file was missing or alignment is `not_assessed`, omit the alignment field.
+Parse the alignment verdict from the alignment file's `**Alignment**:` line. If the alignment file was missing or alignment is `not_assessed`, omit the alignment field — it defaults to `not_assessed`.
 
 If alignment is `weak`, set `needs_attention=true` (strategic misalignment requires human review).
 
 ```bash
 python3 scripts/frontmatter.py set artifacts/initiative-reviews/{ID}-review.md \
     initiative_id={ID} score=<total> pass=<true/false> recommendation=<submit/revise/split/reject> \
-    feasibility=<feasible/infeasible/indeterminate> \
-    auto_revised=false needs_attention=<true/false> \
+    feasibility=<feasible/infeasible/indeterminate> needs_attention=<true/false> \
     needs_attention_reason="<reason or null>" \
     scores.what=<n> scores.why=<n> scores.scope=<n> scores.open_to_how=<n> scores.right_sized=<n> \
     alignment=<strong/partial/weak/not_assessed>

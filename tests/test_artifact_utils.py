@@ -339,6 +339,12 @@ class TestInitiativeSchemas:
     def test_initiative_review_has_alignment(self):
         assert "alignment" in SCHEMAS["initiative-review"]
 
+    def test_alignment_defaults_to_not_assessed(self):
+        """Omitting alignment must read the same as the alignment file's own value."""
+        data = {}
+        apply_defaults(data, "initiative-review")
+        assert data["alignment"] == "not_assessed"
+
     def test_initiative_review_score_fields(self):
         fields = SCHEMAS["initiative-review"]["scores"]["fields"]
         assert "what" in fields

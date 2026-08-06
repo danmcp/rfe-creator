@@ -277,7 +277,9 @@ SCHEMAS = {
             "type": "string",
             "required": False,
             "enum": ["strong", "partial", "weak", "not_assessed"],
-            "default": None,
+            # Defaults to not_assessed, not null, so an Initiative with no
+            # RHAISTRAT parent reads the same here as in its alignment file.
+            "default": "not_assessed",
         },
     },
 }
