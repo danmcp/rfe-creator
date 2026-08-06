@@ -1087,7 +1087,7 @@ class TestBootstrapInitiativeType:
             env=env,
         )
         assert r.returncode == 0, r.stderr
-        assert "initiative-creator-ignore" in r.stderr
+        assert "initiative-ignore" in r.stderr
 
         snapshot_dir = os.path.join(art_dir, "auto-fix-runs")
         snap_files = os.listdir(snapshot_dir)

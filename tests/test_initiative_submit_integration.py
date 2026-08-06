@@ -171,10 +171,10 @@ class TestCreateNewInitiative:
         issues = jira.search("project = RHOAIENG")
         issue = jira.get(issues[0]["key"])
         labels = issue["fields"]["labels"]
-        assert "initiative-creator-auto-created" in labels
-        assert "initiative-creator-alignment-strong" in labels
-        assert "initiative-creator-feasibility-pass" in labels
-        assert "initiative-creator-autofix-rubric-pass" in labels
+        assert "initiative-auto-created" in labels
+        assert "initiative-alignment-strong" in labels
+        assert "initiative-feasibility-pass" in labels
+        assert "initiative-autofix-rubric-pass" in labels
         assert "rfe-creator-autofix-rubric-pass" not in labels
 
     def test_renames_files(self, art_dir, jira):
@@ -229,8 +229,8 @@ class TestUpdateExistingInitiative:
 
         issue = jira.get("RHOAIENG-1234")
         labels = issue["fields"]["labels"]
-        assert "initiative-creator-auto-revised" in labels
-        assert "initiative-creator-alignment-strong" in labels
+        assert "initiative-auto-revised" in labels
+        assert "initiative-alignment-strong" in labels
 
     def test_sets_status_submitted(self, art_dir, jira):
         """Existing Initiative after update → frontmatter status = Submitted."""
@@ -264,8 +264,8 @@ class TestLabelOnly:
 
         issue = jira.get("RHOAIENG-1234")
         labels = issue["fields"]["labels"]
-        assert "initiative-creator-alignment-strong" in labels
-        assert "initiative-creator-feasibility-pass" in labels
+        assert "initiative-alignment-strong" in labels
+        assert "initiative-feasibility-pass" in labels
 
         desc_changes = []
         for h in issue.get("changelog", {}).get("histories", []):
@@ -564,16 +564,16 @@ class TestInfeasibleSubmit:
         assert "Updated" in r.stdout
 
         issue = jira.get("RHOAIENG-1234")
-        assert "initiative-creator-feasibility-fail" in issue["fields"]["labels"]
+        assert "initiative-feasibility-fail" in issue["fields"]["labels"]
 
 
 class TestAlignmentLabelIntegration:
     @pytest.mark.parametrize(
         "alignment,expected_label",
         [
-            ("strong", "initiative-creator-alignment-strong"),
-            ("partial", "initiative-creator-alignment-partial"),
-            ("weak", "initiative-creator-alignment-weak"),
+            ("strong", "initiative-alignment-strong"),
+            ("partial", "initiative-alignment-partial"),
+            ("weak", "initiative-alignment-weak"),
         ],
     )
     def test_alignment_label_applied_to_jira(self, art_dir, jira, alignment, expected_label):

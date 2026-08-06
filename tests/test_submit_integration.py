@@ -1354,7 +1354,7 @@ class TestAlignmentLabels:
     """Initiative-specific: alignment field maps to alignment labels."""
 
     def test_strong_alignment_label_applied(self, init_art_dir, jira):
-        """alignment=strong → initiative-creator-alignment-strong label."""
+        """alignment=strong → initiative-alignment-strong label."""
         _write(
             f"{init_art_dir}/initiatives/INIT-001.md",
             INITIATIVE_TASK_FM.format(init_id="INIT-001"),
@@ -1370,12 +1370,12 @@ class TestAlignmentLabels:
         issues = jira.search("project = RHOAIENG")
         assert len(issues) == 1
         issue = jira.get(issues[0]["key"])
-        assert "initiative-creator-alignment-strong" in issue["fields"]["labels"]
-        assert "initiative-creator-alignment-partial" not in issue["fields"]["labels"]
-        assert "initiative-creator-alignment-weak" not in issue["fields"]["labels"]
+        assert "initiative-alignment-strong" in issue["fields"]["labels"]
+        assert "initiative-alignment-partial" not in issue["fields"]["labels"]
+        assert "initiative-alignment-weak" not in issue["fields"]["labels"]
 
     def test_partial_alignment_label_applied(self, init_art_dir, jira):
-        """alignment=partial → initiative-creator-alignment-partial label."""
+        """alignment=partial → initiative-alignment-partial label."""
         _write(
             f"{init_art_dir}/initiatives/INIT-001.md",
             INITIATIVE_TASK_FM.format(init_id="INIT-001"),
@@ -1391,11 +1391,11 @@ class TestAlignmentLabels:
         issues = jira.search("project = RHOAIENG")
         assert len(issues) == 1
         issue = jira.get(issues[0]["key"])
-        assert "initiative-creator-alignment-partial" in issue["fields"]["labels"]
-        assert "initiative-creator-alignment-strong" not in issue["fields"]["labels"]
+        assert "initiative-alignment-partial" in issue["fields"]["labels"]
+        assert "initiative-alignment-strong" not in issue["fields"]["labels"]
 
     def test_weak_alignment_label_applied(self, init_art_dir, jira):
-        """alignment=weak → initiative-creator-alignment-weak label."""
+        """alignment=weak → initiative-alignment-weak label."""
         _write(
             f"{init_art_dir}/initiatives/INIT-001.md",
             INITIATIVE_TASK_FM.format(init_id="INIT-001"),
@@ -1411,8 +1411,8 @@ class TestAlignmentLabels:
         issues = jira.search("project = RHOAIENG")
         assert len(issues) == 1
         issue = jira.get(issues[0]["key"])
-        assert "initiative-creator-alignment-weak" in issue["fields"]["labels"]
-        assert "initiative-creator-alignment-strong" not in issue["fields"]["labels"]
+        assert "initiative-alignment-weak" in issue["fields"]["labels"]
+        assert "initiative-alignment-strong" not in issue["fields"]["labels"]
 
     def test_no_alignment_no_label(self, init_art_dir, jira):
         """No alignment field → no alignment label applied."""

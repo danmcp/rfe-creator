@@ -81,7 +81,7 @@ SPLIT_CONFIG = {
         "project": "RHOAIENG",
         "issue_type": "Initiative",
         "comment_marker": "[Initiative Creator]",
-        "label_prefix": "initiative-creator",
+        "label_prefix": "initiative",
         "entity_name": "Initiative",
         "entity_name_plural": "Initiatives",
         "id_field": "initiative_id",
@@ -96,9 +96,9 @@ SPLIT_CONFIG = {
         ),
         "do_rebuild_index": False,
         "alignment_labels": {
-            "strong": "initiative-creator-alignment-strong",
-            "partial": "initiative-creator-alignment-partial",
-            "weak": "initiative-creator-alignment-weak",
+            "strong": "initiative-alignment-strong",
+            "partial": "initiative-alignment-partial",
+            "weak": "initiative-alignment-weak",
         },
     },
 }

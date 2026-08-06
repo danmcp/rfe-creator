@@ -59,7 +59,7 @@ SNAPSHOT_CONFIG = {
         "snapshot_prefix": "issue-snapshot-",
     },
     "initiative": {
-        "ignore_label": "initiative-creator-ignore",
+        "ignore_label": "initiative-ignore",
         "snapshot_prefix": "initiative-snapshot-",
     },
 }

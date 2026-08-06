@@ -766,7 +766,7 @@ class TestSnapshotConfig:
         assert SNAPSHOT_CONFIG["rfe"]["snapshot_prefix"] == "issue-snapshot-"
 
     def test_initiative_config(self):
-        assert SNAPSHOT_CONFIG["initiative"]["ignore_label"] == "initiative-creator-ignore"
+        assert SNAPSHOT_CONFIG["initiative"]["ignore_label"] == "initiative-ignore"
         assert SNAPSHOT_CONFIG["initiative"]["snapshot_prefix"] == "initiative-snapshot-"
 
 
@@ -900,7 +900,7 @@ class TestCmdFetchInitiativeType:
     def test_initiative_uses_initiative_ignore_label(self, tmp_path, monkeypatch):
         current = {"RHOAIENG-1": {"content_hash": "aaa", "labels": []}}
         captured, _, _ = self._run_fetch(tmp_path, current, monkeypatch)
-        assert "initiative-creator-ignore" in captured["jql"]
+        assert "initiative-ignore" in captured["jql"]
         assert "rfe-creator-ignore" not in captured["jql"]
 
     def test_initiative_writes_initiative_snapshot_file(self, tmp_path, monkeypatch):
@@ -916,7 +916,7 @@ class TestCmdFetchInitiativeType:
         current = {"RHAIRFE-1": {"content_hash": "aaa", "labels": []}}
         captured, _, _ = self._run_fetch(tmp_path, current, monkeypatch, issue_type="rfe")
         assert "rfe-creator-ignore" in captured["jql"]
-        assert "initiative-creator-ignore" not in captured["jql"]
+        assert "initiative-ignore" not in captured["jql"]
 
     def test_rfe_writes_issue_snapshot_file(self, tmp_path, monkeypatch):
         current = {"RHAIRFE-1": {"content_hash": "aaa", "labels": []}}

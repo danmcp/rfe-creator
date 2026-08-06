@@ -102,17 +102,17 @@ TYPE_CONFIGS = {
         "review_schema": "initiative-review",
         "snapshot_prefix": "initiative-snapshot-",
         "split_type_arg": "initiative",
-        "label_prefix": "initiative-creator",
-        "rubric_pass_label": "initiative-creator-autofix-rubric-pass",
+        "label_prefix": "initiative",
+        "rubric_pass_label": "initiative-autofix-rubric-pass",
         "feasibility_labels": {
-            "feasible": "initiative-creator-feasibility-pass",
-            "infeasible": "initiative-creator-feasibility-fail",
-            "indeterminate": "initiative-creator-feasibility-unknown",
+            "feasible": "initiative-feasibility-pass",
+            "infeasible": "initiative-feasibility-fail",
+            "indeterminate": "initiative-feasibility-unknown",
         },
         "alignment_labels": {
-            "strong": "initiative-creator-alignment-strong",
-            "partial": "initiative-creator-alignment-partial",
-            "weak": "initiative-creator-alignment-weak",
+            "strong": "initiative-alignment-strong",
+            "partial": "initiative-alignment-partial",
+            "weak": "initiative-alignment-weak",
         },
         "removed_context_preamble": (
             "*[Initiative Creator]* The following technical implementation "

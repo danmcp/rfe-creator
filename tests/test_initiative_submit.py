@@ -179,7 +179,7 @@ class TestSkipLogic:
         stdout, _, rc = _run_submit(art_dir)
         assert rc == 0
         assert "Would create" in stdout
-        assert "initiative-creator-feasibility-fail" in stdout
+        assert "initiative-feasibility-fail" in stdout
 
     def test_already_submitted_skipped(self, art_dir):
         """Initiative with status=Submitted → excluded from plan."""
@@ -200,9 +200,9 @@ class TestAlignmentLabels:
     @pytest.mark.parametrize(
         "alignment,expected_label",
         [
-            ("strong", "initiative-creator-alignment-strong"),
-            ("partial", "initiative-creator-alignment-partial"),
-            ("weak", "initiative-creator-alignment-weak"),
+            ("strong", "initiative-alignment-strong"),
+            ("partial", "initiative-alignment-partial"),
+            ("weak", "initiative-alignment-weak"),
         ],
     )
     def test_alignment_label_applied(self, art_dir, alignment, expected_label):
@@ -223,9 +223,9 @@ class TestFeasibilityLabels:
     @pytest.mark.parametrize(
         "verdict,expected_label",
         [
-            ("feasible", "initiative-creator-feasibility-pass"),
-            ("infeasible", "initiative-creator-feasibility-fail"),
-            ("indeterminate", "initiative-creator-feasibility-unknown"),
+            ("feasible", "initiative-feasibility-pass"),
+            ("infeasible", "initiative-feasibility-fail"),
+            ("indeterminate", "initiative-feasibility-unknown"),
         ],
     )
     def test_feasibility_label_on_create(self, art_dir, verdict, expected_label):
@@ -241,7 +241,7 @@ class TestFeasibilityLabels:
 
 
 class TestRubricPassLabel:
-    """Initiatives get initiative-creator-autofix-rubric-pass, not the RFE variant."""
+    """Initiatives get initiative-autofix-rubric-pass, not the RFE variant."""
 
     def test_rubric_pass_label_applied(self, art_dir):
         _write(f"{art_dir}/initiatives/INIT-001.md", TASK_FM.format(initiative_id="INIT-001"))
@@ -252,13 +252,13 @@ class TestRubricPassLabel:
 
         stdout, _, rc = _run_submit(art_dir)
         assert rc == 0
-        assert "initiative-creator-autofix-rubric-pass" in stdout
+        assert "initiative-autofix-rubric-pass" in stdout
         assert "rfe-creator-autofix-rubric-pass" not in stdout
 
 
 class TestAutoRevisedLabel:
     def test_auto_revised_label_applied(self, art_dir):
-        """auto_revised=true → initiative-creator-auto-revised label."""
+        """auto_revised=true → initiative-auto-revised label."""
         _write(f"{art_dir}/initiatives/INIT-001.md", TASK_FM.format(initiative_id="INIT-001"))
         _write(
             f"{art_dir}/initiative-reviews/INIT-001-review.md",
@@ -267,7 +267,7 @@ class TestAutoRevisedLabel:
 
         stdout, _, rc = _run_submit(art_dir)
         assert rc == 0
-        assert "initiative-creator-auto-revised" in stdout
+        assert "initiative-auto-revised" in stdout
 
     def test_no_label_when_not_revised(self, art_dir):
         """auto_revised=false → no auto-revised label."""
@@ -279,7 +279,7 @@ class TestAutoRevisedLabel:
 
         stdout, _, rc = _run_submit(art_dir)
         assert rc == 0
-        assert "initiative-creator-auto-revised" not in stdout
+        assert "initiative-auto-revised" not in stdout
 
 
 class TestAutoApprove:
@@ -453,7 +453,7 @@ class TestContentDiffGuard:
         stdout, _, rc = _run_submit(art_dir)
         assert rc == 0
         assert "Label only" in stdout
-        assert "initiative-creator-autofix-rubric-pass" in stdout
+        assert "initiative-autofix-rubric-pass" in stdout
 
     def test_existing_initiative_with_changes_submitted(self, art_dir):
         """Existing Initiative with different content → update."""

@@ -42,19 +42,19 @@ The scripts automatically apply labels based on what happened during the pipelin
 
 | Label | When applied |
 |-------|-------------|
-| `initiative-creator-auto-created` | Ticket was created by the pipeline (new Initiatives, not updates) |
-| `initiative-creator-auto-revised` | Ticket content was modified by automation (review frontmatter `auto_revised: true`) |
-| `initiative-creator-split-original` | Parent ticket that was decomposed into smaller Initiatives |
-| `initiative-creator-split-result` | Child ticket produced by splitting another Initiative |
-| `initiative-creator-needs-attention` | Automation couldn't fully resolve all issues — human review needed (review frontmatter `needs_attention: true`) |
-| `initiative-creator-autofix-rubric-pass` | Initiative passed review (recommendation = "submit") — excluded from future auto-fix JQL queries |
-| `initiative-creator-feasibility-pass` | Technical feasibility check returned `feasible` |
-| `initiative-creator-feasibility-fail` | Technical feasibility check returned `infeasible` |
-| `initiative-creator-feasibility-unknown` | Technical feasibility check returned `indeterminate` |
-| `initiative-creator-alignment-strong` | Strategic alignment check returned `strong` |
-| `initiative-creator-alignment-partial` | Strategic alignment check returned `partial` |
-| `initiative-creator-alignment-weak` | Strategic alignment check returned `weak` |
+| `initiative-auto-created` | Ticket was created by the pipeline (new Initiatives, not updates) |
+| `initiative-auto-revised` | Ticket content was modified by automation (review frontmatter `auto_revised: true`) |
+| `initiative-split-original` | Parent ticket that was decomposed into smaller Initiatives |
+| `initiative-split-result` | Child ticket produced by splitting another Initiative |
+| `initiative-needs-attention` | Automation couldn't fully resolve all issues — human review needed (review frontmatter `needs_attention: true`) |
+| `initiative-autofix-rubric-pass` | Initiative passed review (recommendation = "submit") — excluded from future auto-fix JQL queries |
+| `initiative-feasibility-pass` | Technical feasibility check returned `feasible` |
+| `initiative-feasibility-fail` | Technical feasibility check returned `infeasible` |
+| `initiative-feasibility-unknown` | Technical feasibility check returned `indeterminate` |
+| `initiative-alignment-strong` | Strategic alignment check returned `strong` |
+| `initiative-alignment-partial` | Strategic alignment check returned `partial` |
+| `initiative-alignment-weak` | Strategic alignment check returned `weak` |
 
-The three `initiative-creator-feasibility-*` labels are mutually exclusive: on each submit, the matching label is added and any others present in the ticket's `original_labels` are removed. The three `initiative-creator-alignment-*` labels follow the same mutual-exclusion rule. Rejected Initiatives have any feasibility and alignment labels stripped (no add).
+The three `initiative-feasibility-*` labels are mutually exclusive: on each submit, the matching label is added and any others present in the ticket's `original_labels` are removed. The three `initiative-alignment-*` labels follow the same mutual-exclusion rule. Rejected Initiatives have any feasibility and alignment labels stripped (no add).
 
 $ARGUMENTS

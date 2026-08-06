@@ -79,8 +79,8 @@ def main():
     if args.project == "initiative":
         jql = (
             f"({args.jql}) AND statusCategory != Done"
-            " AND (labels not in (initiative-creator-ignore,"
-            " initiative-creator-autofix-rubric-pass) OR labels is EMPTY)"
+            " AND (labels not in (initiative-ignore,"
+            " initiative-autofix-rubric-pass) OR labels is EMPTY)"
         )
     else:
         jql = (
