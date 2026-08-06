@@ -340,3 +340,42 @@ class TestCLI:
         with open(out_path) as f:
             report = yaml.safe_load(f)
         assert "INIT-100" in [e["id"] for e in report["per_initiative"]]
+
+    def _run(self, art):
+        script = os.path.join(os.path.dirname(__file__), "..", "scripts", "generate_run_report.py")
+        return subprocess.run(
+            [
+                sys.executable,
+                script,
+                "--type",
+                "initiative",
+                "--start-time",
+                "20260404-170041",
+                "--artifacts-dir",
+                art,
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_empty_reviews_dir_writes_a_report(self, tmp_path):
+        art = str(tmp_path / "artifacts")
+        os.makedirs(os.path.join(art, "initiative-reviews"))
+
+        result = self._run(art)
+
+        assert result.returncode == 0
+        with open(result.stdout.strip()) as f:
+            report = yaml.safe_load(f)
+        assert report["input_count"] == 0
+        assert report["per_initiative"] == []
+
+    def test_the_error_names_the_initiative_reviews_dir(self, tmp_path):
+        """Not artifacts/rfe-reviews — the two types scan different directories."""
+        art = str(tmp_path / "artifacts")
+        os.makedirs(art)
+
+        result = self._run(art)
+
+        assert result.returncode == 2
+        assert os.path.join(art, "initiative-reviews") in result.stderr

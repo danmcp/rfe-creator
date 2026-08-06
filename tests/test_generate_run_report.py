@@ -2,9 +2,11 @@
 """Tests for scripts/generate_run_report.py — run report generation."""
 
 import os
+import subprocess
 import sys
 
 import pytest
+import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
@@ -292,6 +294,55 @@ class TestScanReviewFiles:
         ids = [e["id"] for e in report["per_rfe"]]
         assert "RHAIRFE-100" in ids
         assert "RHAIRFE-200" in ids
+
+
+class TestNoReviewsToScan:
+    """A run with nothing to review still reports; a missing dir is an error.
+
+    REPORT is a script phase, so pipeline_state.cmd_run_phase propagates a
+    nonzero exit — erroring on an empty batch would fail the run at its last step.
+    """
+
+    def _run(self, art):
+        return subprocess.run(
+            [
+                sys.executable,
+                os.path.join(os.path.dirname(__file__), "..", "scripts", "generate_run_report.py"),
+                "--start-time",
+                "20260404-170041",
+                "--artifacts-dir",
+                art,
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_empty_reviews_dir_writes_a_report(self, tmp_path):
+        art = str(tmp_path / "artifacts")
+        os.makedirs(os.path.join(art, "rfe-reviews"))
+
+        result = self._run(art)
+
+        assert result.returncode == 0
+        with open(result.stdout.strip()) as f:
+            report = yaml.safe_load(f)
+        assert report["input_count"] == 0
+        assert report["per_rfe"] == []
+        assert report["results"]["passed"] == 0
+
+    def test_missing_reviews_dir_is_an_error(self, tmp_path):
+        art = str(tmp_path / "artifacts")
+        os.makedirs(art)
+
+        result = self._run(art)
+
+        assert result.returncode == 2
+        assert "no reviews directory" in result.stderr
+
+    def test_the_error_names_the_path(self, tmp_path):
+        art = str(tmp_path / "artifacts")
+        os.makedirs(art)
+        assert os.path.join(art, "rfe-reviews") in self._run(art).stderr
 
 
 class TestGenerateReviewPdfArtifactsDir:
