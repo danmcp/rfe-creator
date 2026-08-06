@@ -10,7 +10,13 @@ from datetime import datetime, timezone
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from artifact_utils import find_review_file, read_frontmatter, resolve_ids, scan_task_files
+from artifact_utils import (
+    find_review_file,
+    read_frontmatter,
+    resolve_ids,
+    scan_initiative_task_files,
+    scan_task_files,
+)
 
 DEFAULT_ARTIFACTS_DIR = os.path.join(os.getcwd(), "artifacts")
 
@@ -21,6 +27,10 @@ TYPE_CONFIG = {
         "item_key": "per_rfe",
         "output_prefix": "",
         "extra_entry_fields": [],
+        "scan_tasks": scan_task_files,
+        "id_field": "rfe_id",
+        # parent_key values that mean "split from"; see split_children_map.
+        "child_parent_prefixes": ("RFE-", "RHAIRFE-"),
     },
     "initiative": {
         "score_fields": [
@@ -34,10 +44,30 @@ TYPE_CONFIG = {
         "item_key": "per_initiative",
         "output_prefix": "initiative-run-",
         "extra_entry_fields": ["alignment", "feasibility", "needs_attention"],
+        "scan_tasks": scan_initiative_task_files,
+        "id_field": "initiative_id",
+        "child_parent_prefixes": ("INIT-", "RHOAIENG-"),
     },
 }
 
 SCORE_FIELDS = TYPE_CONFIG["rfe"]["score_fields"]
+
+
+def split_children_map(artifacts_dir, config):
+    """Map parent ID -> child IDs for split children found in the task dir.
+
+    A child declares its parent with `parent_key`. On the initiative side that
+    same field also carries the RHAISTRAT Outcome link, which is a strategy
+    rollup, not a split — so only same-family parents count.
+
+    `config` is a TYPE_CONFIG entry.
+    """
+    children_map = {}
+    for _, task_data in config["scan_tasks"](artifacts_dir):
+        parent = task_data.get("parent_key")
+        if parent and parent.startswith(config["child_parent_prefixes"]):
+            children_map.setdefault(parent, []).append(task_data[config["id_field"]])
+    return children_map
 
 
 def _parse_run_id(start_time):
@@ -68,13 +98,8 @@ def build_report(
     score_fields = config["score_fields"]
     reviews_dir = os.path.join(artifacts_dir, config["reviews_dir"])
 
-    # RFE: expand ID list to include split children discovered from task files
-    children_map = {}
-    if entry_type == "rfe":
-        for _, task_data in scan_task_files(artifacts_dir):
-            parent = task_data.get("parent_key")
-            if parent:
-                children_map.setdefault(parent, []).append(task_data["rfe_id"])
+    # Expand ID list to include split children discovered from task files
+    children_map = split_children_map(artifacts_dir, config)
     all_children = [c for kids in children_map.values() for c in kids]
     expanded_ids = list(ids) + [c for c in all_children if c not in ids]
 

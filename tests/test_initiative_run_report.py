@@ -35,6 +35,19 @@ scores:
 Looks good.
 """
 
+TASK_TEMPLATE = """\
+---
+initiative_id: {init_id}
+title: Test Initiative
+priority: Major
+status: {status}
+{extra}
+---
+
+## Objective
+Test content.
+"""
+
 
 def _write(path, content):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -219,6 +232,71 @@ class TestBuildReport:
             ["INIT-001"], "20260404-170041", artifacts_dir=art_dir, entry_type="initiative"
         )
         assert report["per_initiative"][0]["alignment"] == "partial"
+
+
+class TestSplitChildrenIncluded:
+    """Parity with the RFE report: children are discovered from parent_key."""
+
+    def _review(self, art_dir, init_id, **kw):
+        defaults = dict(
+            score=8,
+            pass_val="true",
+            recommendation="submit",
+            auto_revised="false",
+            alignment="strong",
+            what=2,
+            why=2,
+            scope=2,
+            open_to_how=1,
+            right_sized=1,
+            extra="",
+        )
+        defaults.update(kw)
+        _write(
+            f"{art_dir}/initiative-reviews/{init_id}-review.md",
+            REVIEW_TEMPLATE.format(init_id=init_id, **defaults),
+        )
+
+    def test_children_get_own_entries(self, art_dir):
+        _write(
+            f"{art_dir}/initiatives/INIT-001.md",
+            TASK_TEMPLATE.format(init_id="INIT-001", status="Archived", extra=""),
+        )
+        self._review(art_dir, "INIT-001", score=5, pass_val="false", recommendation="split")
+        for child in ("INIT-002", "INIT-003"):
+            _write(
+                f"{art_dir}/initiatives/{child}.md",
+                TASK_TEMPLATE.format(init_id=child, status="Draft", extra="parent_key: INIT-001"),
+            )
+            self._review(art_dir, child)
+
+        report = build_report(
+            ["INIT-001"], "20260404-170041", artifacts_dir=art_dir, entry_type="initiative"
+        )
+
+        ids = [e["id"] for e in report["per_initiative"]]
+        assert ids == ["INIT-001", "INIT-002", "INIT-003"]
+        assert report["per_initiative"][0]["children"] == ["INIT-002", "INIT-003"]
+        assert report["results"] == {"passed": 2, "failed": 0, "split": 1, "errors": 0}
+        # input_count reflects caller-supplied IDs only
+        assert report["input_count"] == 1
+
+    def test_strategic_parent_is_not_a_split_child(self, art_dir):
+        """parent_key doubles as the RHAISTRAT Outcome link — not a split."""
+        _write(
+            f"{art_dir}/initiatives/INIT-001.md",
+            TASK_TEMPLATE.format(
+                init_id="INIT-001", status="Draft", extra="parent_key: RHAISTRAT-1510"
+            ),
+        )
+        self._review(art_dir, "INIT-001")
+
+        report = build_report(
+            ["INIT-001"], "20260404-170041", artifacts_dir=art_dir, entry_type="initiative"
+        )
+
+        assert [e["id"] for e in report["per_initiative"]] == ["INIT-001"]
+        assert "children" not in report["per_initiative"][0]
 
 
 class TestCLI:

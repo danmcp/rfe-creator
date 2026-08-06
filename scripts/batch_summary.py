@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from artifact_utils import read_frontmatter, resolve_ids
+from generate_run_report import TYPE_CONFIG, split_children_map
 
 _TYPE_CONFIG = {
     "rfe": {"reviews_dir": "rfe-reviews", "tasks_dir": "rfe-tasks"},
@@ -35,19 +36,25 @@ def main():
     artifacts_dir = os.path.join(os.getcwd(), "artifacts")
     reviews_dir = os.path.join(artifacts_dir, tc["reviews_dir"])
 
-    # Expand to include split children
+    # Expand to include split children. Children are discovered from their own
+    # `parent_key` — the same rule the run report uses — because nothing writes
+    # a `children` list onto the parent. The parent-side read stays as a
+    # fallback for hand-maintained artifacts.
     all_ids = list(ids)
     id_set = set(all_ids)
+    children_map = split_children_map(artifacts_dir, TYPE_CONFIG[args.type])
     for rfe_id in ids:
+        declared = []
         task_path = os.path.join(artifacts_dir, tc["tasks_dir"], f"{rfe_id}.md")
         try:
             data, _ = read_frontmatter(task_path)
-            for child_id in data.get("children") or []:
-                if child_id not in id_set:
-                    all_ids.append(child_id)
-                    id_set.add(child_id)
+            declared = data.get("children") or []
         except Exception:
             pass
+        for child_id in list(declared) + children_map.get(rfe_id, []):
+            if child_id not in id_set:
+                all_ids.append(child_id)
+                id_set.add(child_id)
 
     passed = 0
     failed = 0

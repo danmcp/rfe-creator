@@ -333,7 +333,14 @@ def main():
 
         error = review_fm.get("error")
 
-        is_split_child = bool(task_fm.get("parent_key"))
+        # parent_key means "split from" only when it points at another artifact
+        # of the same family. Initiatives reuse the field for the RHAISTRAT
+        # Outcome rollup, which would otherwise file every strategy-linked
+        # Initiative under "New Initiatives from Splits".
+        parent_key = task_fm.get("parent_key")
+        is_split_child = bool(parent_key) and parent_key.startswith(
+            (config["local_prefix"], config["jira_prefix"])
+        )
         is_split_parent = (
             task_fm.get("status") == "Archived" and review_fm.get("recommendation") == "split"
         )
@@ -344,7 +351,7 @@ def main():
                 "title": title,
                 "is_split_child": is_split_child,
                 "is_split_parent": is_split_parent,
-                "parent_key": task_fm.get("parent_key"),
+                "parent_key": parent_key if is_split_child else None,
                 "before_scores": before_scores,
                 "after_scores": after_scores,
                 "before_total": before_total,

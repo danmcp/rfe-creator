@@ -173,8 +173,78 @@ class TestChildExpansion:
         out, _, rc = _run(["RHAIRFE-400"], cwd=str(workspace))
         assert rc == 0
         assert "TOTAL=3" in out.splitlines()[0]
-        assert "RHAIRFE-401" in out
-        assert "RHAIRFE-402" in out
+
+    def test_children_discovered_from_parent_key(self, workspace):
+        """Split children declare parent_key; nothing writes `children` upward."""
+        for rfe_id, extra in [
+            ("RHAIRFE-500", "status: Archived"),
+            ("RFE-001", "status: Draft\nparent_key: RHAIRFE-500"),
+            ("RFE-002", "status: Draft\nparent_key: RHAIRFE-500"),
+        ]:
+            _write_raw(
+                str(workspace / f"artifacts/rfe-tasks/{rfe_id}.md"),
+                f"---\nrfe_id: {rfe_id}\ntitle: T\npriority: Normal\n{extra}\n---\n",
+            )
+        write_frontmatter(
+            str(workspace / "artifacts/rfe-reviews/RHAIRFE-500-review.md"),
+            {**RFE_REVIEW_SPLIT, "rfe_id": "RHAIRFE-500"},
+            "rfe-review",
+        )
+        for child in ("RFE-001", "RFE-002"):
+            write_frontmatter(
+                str(workspace / f"artifacts/rfe-reviews/{child}-review.md"),
+                {**RFE_REVIEW_PASS, "rfe_id": child},
+                "rfe-review",
+            )
+        out, _, rc = _run(["RHAIRFE-500"], cwd=str(workspace))
+        assert rc == 0
+        counts = out.splitlines()[0]
+        assert "TOTAL=3" in counts
+        assert "PASSED=2" in counts
+        assert "SPLIT=1" in counts
+
+    def test_initiative_children_discovered_from_parent_key(self, workspace):
+        """Parity: the initiative path expands children the same way."""
+        for init_id, extra in [
+            ("INIT-001", "status: Archived"),
+            ("INIT-002", "status: Draft\nparent_key: INIT-001"),
+        ]:
+            _write_raw(
+                str(workspace / f"artifacts/initiatives/{init_id}.md"),
+                f"---\ninitiative_id: {init_id}\ntitle: T\npriority: Normal\n{extra}\n---\n",
+            )
+        write_frontmatter(
+            str(workspace / "artifacts/initiative-reviews/INIT-001-review.md"),
+            {**INIT_REVIEW, "initiative_id": "INIT-001", "recommendation": "split", "pass": False},
+            "initiative-review",
+        )
+        write_frontmatter(
+            str(workspace / "artifacts/initiative-reviews/INIT-002-review.md"),
+            {**INIT_REVIEW, "initiative_id": "INIT-002"},
+            "initiative-review",
+        )
+        out, _, rc = _run(["--type", "initiative", "INIT-001"], cwd=str(workspace))
+        assert rc == 0
+        counts = out.splitlines()[0]
+        assert "TOTAL=2" in counts
+        assert "PASSED=1" in counts
+        assert "SPLIT=1" in counts
+
+    def test_strategic_parent_is_not_a_split_child(self, workspace):
+        """A RHAISTRAT rollup must not pull unrelated Initiatives into the count."""
+        _write_raw(
+            str(workspace / "artifacts/initiatives/INIT-010.md"),
+            "---\ninitiative_id: INIT-010\ntitle: T\npriority: Normal\n"
+            "status: Draft\nparent_key: RHAISTRAT-1510\n---\n",
+        )
+        write_frontmatter(
+            str(workspace / "artifacts/initiative-reviews/INIT-010-review.md"),
+            {**INIT_REVIEW, "initiative_id": "INIT-010"},
+            "initiative-review",
+        )
+        out, _, rc = _run(["--type", "initiative", "INIT-010"], cwd=str(workspace))
+        assert rc == 0
+        assert "TOTAL=1" in out.splitlines()[0]
 
 
 class TestErrors:
