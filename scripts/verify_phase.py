@@ -2,11 +2,11 @@
 """Post-barrier verification for agent phases.
 
 Checks that expected output files exist for each ID after a phase
-completes. For the review phase, missing outputs are treated as
-terminal failures — error frontmatter is written and the ID is
-removed from the active set. For non-review phases (assess, fetch,
-etc.), failures are only reported so downstream phases can handle
-them — no review files are created and the ids file is not modified.
+completes. Missing outputs are treated as agent failures — error
+frontmatter is written and the ID is removed from the active set.
+
+The phase→path maps below must stay in step with
+check_review_progress.PHASE_CHECKS.
 
 Usage:
     python3 scripts/verify_phase.py --phase assess --ids-file tmp/pipeline-active-ids.txt
@@ -102,7 +102,7 @@ def verify(phase, ids_file, pipeline_type="rfe"):
         if not exists:
             failed.append(rfe_id)
 
-    if failed and phase == "review":
+    if failed:
         for rfe_id in failed:
             review_path = f"{tc['reviews_dir']}/{rfe_id}-review.md"
             error_msg = f"{phase}_failed"
