@@ -4,7 +4,7 @@
 Must be idempotent — a crash at any point allows a safe re-run.
 
 Usage:
-    python3 scripts/error_collect.py
+    python3 scripts/error_collect.py [--type rfe|initiative]
 """
 
 import os
@@ -46,7 +46,30 @@ def _write_ids(path, ids):
             f.write(f"{id_}\n")
 
 
+_TYPE_CONFIG = {
+    "rfe": {
+        "reviews_dir": "artifacts/rfe-reviews",
+        "originals_dir": "artifacts/rfe-originals",
+        "tasks_dir": "artifacts/rfe-tasks",
+    },
+    "initiative": {
+        "reviews_dir": "artifacts/initiative-reviews",
+        "originals_dir": "artifacts/initiative-originals",
+        "tasks_dir": "artifacts/initiatives",
+    },
+}
+
+
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--type", choices=["rfe", "initiative"], default="rfe")
+    args = parser.parse_args()
+
+    pipeline_type = args.type
+    tc = _TYPE_CONFIG[pipeline_type]
+
     state = _load_state()
 
     # Step 1: Set retry_cycle = 1 FIRST (prevents infinite loops)
@@ -60,7 +83,8 @@ def main():
         sys.exit(1)
 
     result = subprocess.run(
-        ["python3", "scripts/collect_recommendations.py", "--errors"] + all_ids,
+        ["python3", "scripts/collect_recommendations.py", "--type", pipeline_type, "--errors"]
+        + all_ids,
         capture_output=True,
         text=True,
     )
@@ -77,7 +101,7 @@ def main():
     # Step 3: Save error history
     error_details = {}
     for rfe_id in error_ids:
-        review_path = f"artifacts/rfe-reviews/{rfe_id}-review.md"
+        review_path = f"{tc['reviews_dir']}/{rfe_id}-review.md"
         if os.path.exists(review_path):
             try:
                 data, _ = read_frontmatter(review_path)
@@ -103,8 +127,8 @@ def main():
 
         # Restore task file from original for revise errors
         if is_revise_error:
-            orig = f"artifacts/rfe-originals/{rfe_id}.md"
-            task = f"artifacts/rfe-tasks/{rfe_id}.md"
+            orig = f"{tc['originals_dir']}/{rfe_id}.md"
+            task = f"{tc['tasks_dir']}/{rfe_id}.md"
             if os.path.exists(orig) and os.path.exists(task):
                 # Read current frontmatter
                 try:
@@ -124,8 +148,8 @@ def main():
 
         # Delete review and assessment artifacts
         for path in [
-            f"artifacts/rfe-reviews/{rfe_id}-review.md",
-            f"artifacts/rfe-reviews/{rfe_id}-feasibility.md",
+            f"{tc['reviews_dir']}/{rfe_id}-review.md",
+            f"{tc['reviews_dir']}/{rfe_id}-feasibility.md",
             f"tmp/rfe-assess/single/{rfe_id}.md",
             f"tmp/rfe-assess/single/{rfe_id}.result.md",
         ]:
@@ -134,18 +158,27 @@ def main():
 
         # Delete removed-context for revise errors
         if is_revise_error:
-            rc = f"artifacts/rfe-tasks/{rfe_id}-removed-context.yaml"
+            rc = f"{tc['tasks_dir']}/{rfe_id}-removed-context.yaml"
             if os.path.exists(rc):
                 os.remove(rc)
 
         # Clean up split artifacts
         if is_split_error:
-            split_status = f"artifacts/rfe-reviews/{rfe_id}-split-status.yaml"
+            split_status = f"{tc['reviews_dir']}/{rfe_id}-split-status.yaml"
             if os.path.exists(split_status):
                 os.remove(split_status)
-            # Clean children via cleanup_partial_split.py
+            # Clean children via cleanup_partial_split.py. Without --type it
+            # defaults to rfe and would scan rfe-tasks/ for an initiative's
+            # children, finding none and leaving them orphaned.
             subprocess.run(
-                ["python3", "scripts/cleanup_partial_split.py", rfe_id], capture_output=True
+                [
+                    "python3",
+                    "scripts/cleanup_partial_split.py",
+                    rfe_id,
+                    "--type",
+                    pipeline_type,
+                ],
+                capture_output=True,
             )
 
     # Step 6: Post-cleanup verification
@@ -153,8 +186,8 @@ def main():
     for rfe_id in error_ids:
         for path in [
             f"tmp/rfe-assess/single/{rfe_id}.result.md",
-            f"artifacts/rfe-reviews/{rfe_id}-review.md",
-            f"artifacts/rfe-reviews/{rfe_id}-feasibility.md",
+            f"{tc['reviews_dir']}/{rfe_id}-review.md",
+            f"{tc['reviews_dir']}/{rfe_id}-feasibility.md",
         ]:
             if os.path.exists(path):
                 warnings.append(f"  stale: {path}")
@@ -165,12 +198,17 @@ def main():
             print(w, file=sys.stderr)
 
     # Step 7: Write retry batch file (idempotent guard)
-    total = state.get("total_batches", 0)
-    retry_batch_file = f"tmp/pipeline-batch-{total + 1}-ids.txt"
-    if not os.path.exists(retry_batch_file):
-        state["total_batches"] = total + 1
+    # Keyed on the batch number recorded in state, not on the derived filename.
+    # total_batches is bumped before the file is written, so re-deriving it on a
+    # re-run points at the NEXT slot: the guard sees no file there, allocates a
+    # second retry batch, and leaves the first one empty.
+    retry_batch = state.get("retry_batch")
+    if retry_batch is None:
+        retry_batch = state.get("total_batches", 0) + 1
+        state["retry_batch"] = retry_batch
+        state["total_batches"] = retry_batch
         _save_state(state)
-        _write_ids(retry_batch_file, error_ids)
+    _write_ids(f"tmp/pipeline-batch-{retry_batch}-ids.txt", error_ids)
 
     print(f"ERROR_COLLECT: retry batch with {len(error_ids)} error IDs [{', '.join(error_ids)}]")
     for rfe_id, details in error_details.items():

@@ -1,0 +1,12 @@
+clarifying_context: 'Nobody is really tracking the developer advocacy side of Nexus
+  right now. People write blog posts or give talks at meetups and it just sort of
+  happens ad hoc with no coordination. We want to stand up an initiative that gives
+  this work a proper home -- somewhere we can plan content, track who is presenting
+  where, and make sure the external messaging stays coherent. Think of it as the
+  umbrella that holds all the evangelism pieces: written content, speaking engagements,
+  demo recordings, that kind of thing. The team has been asking for this because
+  without it we end up with duplicate effort and missed opportunities.'
+priority: Major
+prompt: We should formalize how we track developer advocacy for Nexus -- an initiative
+  to coordinate blog posts, talks, and community engagement so the work gets proper
+  visibility and the team stays aligned on external messaging.

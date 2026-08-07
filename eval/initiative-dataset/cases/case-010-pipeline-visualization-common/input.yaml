@@ -1,0 +1,14 @@
+clarifying_context: 'We have a solid pipeline visualization component -- DAG rendering,
+  topology layout, zoom and pan, status badges -- but it is buried inside one feature
+  and other teams cannot easily use it. What happens in practice is people copy the
+  code or write their own version, and then we end up maintaining three slightly
+  different pipeline visualizers that all drift apart over time. We want to pull it
+  out into a shared package with a clean interface, proper documentation, and enough
+  extension points that teams can customize behavior without forking the code. The
+  migration itself needs to be handled carefully so we do not break the existing
+  consumers -- either keep backward compatibility through the transition or give
+  teams a clear upgrade path.'
+priority: Major
+prompt: The pipeline visualization component is trapped inside one feature area
+  and other teams keep re-implementing it. We should extract it into a shared
+  library with a well-defined API so everyone uses the same thing.

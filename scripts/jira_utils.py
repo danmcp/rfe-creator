@@ -781,3 +781,32 @@ def normalize_for_compare(text):
     # Collapse multiple blank lines to one
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def check_description_conflict(server, user, token, issue_key, original_path, extra_fields=None):
+    """Check if a Jira issue description was modified since fetch.
+
+    Returns (has_conflict, fields_dict) where fields_dict contains the fetched
+    Jira fields (always includes 'description'; caller can request more via
+    extra_fields, e.g. ['status']).
+    Returns (False, None) if original_path doesn't exist.
+    """
+    if not os.path.exists(original_path):
+        return False, None
+
+    with open(original_path, encoding="utf-8") as f:
+        orig_snap = normalize_for_compare(f.read())
+
+    fields = ["description"] + (extra_fields or [])
+    issue = get_issue(server, user, token, issue_key, fields=fields)
+    issue_fields = issue.get("fields", {})
+
+    desc_raw = issue_fields.get("description")
+    if isinstance(desc_raw, dict):
+        jira_desc = normalize_for_compare(adf_to_markdown(desc_raw))
+    elif desc_raw is None:
+        jira_desc = ""
+    else:
+        jira_desc = normalize_for_compare(str(desc_raw))
+
+    return orig_snap != jira_desc, issue_fields

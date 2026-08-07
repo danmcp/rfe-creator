@@ -1,0 +1,14 @@
+clarifying_context: 'Right now if you want to create or manage workflows you have to go through the
+  UI -- there is no programmatic path. We want to open that up by introducing a first-class
+  workflow resource in the platform API and giving the SDK matching methods so developers can
+  define, launch, and monitor workflows from code. The underlying model spec needs to be
+  extended to represent workflow definitions alongside the existing skill and guide constructs.
+  There is also some discovery work around how the execution backend handles workflow
+  submissions since that path has only ever been exercised through the console. Once the API
+  surface is solid, the SDK side should follow the same ergonomic patterns the team established
+  for skills and guides so it feels consistent to consumers.'
+priority: Major
+prompt: We want to give developers a way to manage workflows through the API and SDK instead of
+  only through the UI. That means adding a workflow resource to the platform model, sorting out
+  backend execution semantics, and exposing it all in the SDK following the same conventions
+  we already use for skills and guides.

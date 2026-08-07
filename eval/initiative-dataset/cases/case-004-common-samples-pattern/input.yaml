@@ -1,0 +1,11 @@
+clarifying_context: 'Every team that ships example content -- sample notebooks, starter
+  pipelines, reference configs -- ends up building their own little UI for it. The
+  result is that samples look and behave differently depending on which part of the
+  product you are in, which is confusing for users. We already nailed a nice pattern
+  on one of the asset detail pages and it would be great to pull that out into something
+  any team can drop in. One shared component that handles browsing, previewing, and
+  launching examples, with a consistent layout and interaction model everywhere.'
+priority: Normal
+prompt: We need a single reusable UX component for displaying sample content so that
+  every feature area presents examples the same way instead of each team rolling
+  their own.

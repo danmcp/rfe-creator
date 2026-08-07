@@ -169,6 +169,119 @@ SCHEMAS = {
             },
         },
     },
+    "initiative-task": {
+        "initiative_id": {
+            "type": "string",
+            "required": True,
+            "pattern": r"^(INIT-\d+|RHOAIENG-\d+)$",
+        },
+        "title": {
+            "type": "string",
+            "required": True,
+        },
+        "priority": {
+            "type": "string",
+            "required": True,
+            "enum": ["Blocker", "Critical", "Major", "Normal", "Minor", "Undefined"],
+        },
+        "status": {
+            "type": "string",
+            "required": True,
+            "enum": ["Draft", "Ready", "Submitted", "Archived"],
+        },
+        "parent_key": {
+            "type": "string",
+            "required": False,
+            "pattern": r"^(RHAISTRAT-\d+|RHOAIENG-\d+|INIT-\d+)$",
+            "default": None,
+        },
+        "original_labels": {
+            "type": "list",
+            "required": False,
+            "default": None,
+        },
+    },
+    "initiative-review": {
+        "initiative_id": {
+            "type": "string",
+            "required": True,
+            "pattern": r"^(INIT-\d+|RHOAIENG-\d+)$",
+        },
+        "score": {
+            "type": "int",
+            "required": True,
+        },
+        "pass": {
+            "type": "bool",
+            "required": True,
+        },
+        "recommendation": {
+            "type": "string",
+            "required": True,
+            "enum": ["submit", "revise", "split", "reject", "autorevise_reject"],
+        },
+        "feasibility": {
+            "type": "string",
+            "required": True,
+            "enum": ["feasible", "infeasible", "indeterminate"],
+        },
+        "auto_revised": {
+            "type": "bool",
+            "required": True,
+            "default": False,
+        },
+        "needs_attention": {
+            "type": "bool",
+            "required": True,
+            "default": False,
+        },
+        "scores": {
+            "type": "dict",
+            "required": True,
+            "fields": {
+                "what": {"type": "int", "required": True},
+                "why": {"type": "int", "required": True},
+                "scope": {"type": "int", "required": True},
+                "open_to_how": {"type": "int", "required": True},
+                "right_sized": {"type": "int", "required": True},
+            },
+        },
+        "error": {
+            "type": "string",
+            "required": False,
+            "default": None,
+        },
+        "before_score": {
+            "type": "int",
+            "required": False,
+            "default": None,
+        },
+        "needs_attention_reason": {
+            "type": "string",
+            "required": False,
+            "default": None,
+        },
+        "before_scores": {
+            "type": "dict",
+            "required": False,
+            "default": None,
+            "fields": {
+                "what": {"type": "int", "required": True},
+                "why": {"type": "int", "required": True},
+                "scope": {"type": "int", "required": True},
+                "open_to_how": {"type": "int", "required": True},
+                "right_sized": {"type": "int", "required": True},
+            },
+        },
+        "alignment": {
+            "type": "string",
+            "required": False,
+            "enum": ["strong", "partial", "weak", "not_assessed"],
+            # Defaults to not_assessed, not null, so an Initiative with no
+            # RHAISTRAT parent reads the same here as in its alignment file.
+            "default": "not_assessed",
+        },
+    },
 }
 
 
@@ -513,9 +626,11 @@ def find_artifact_file(artifacts_dir, identifier):
     return None
 
 
-def find_artifact_file_including_archived(artifacts_dir, identifier):
-    """Like find_artifact_file but includes archived artifacts."""
-    tasks_dir = os.path.join(artifacts_dir, "rfe-tasks")
+def find_task_file_including_archived(
+    artifacts_dir, identifier, tasks_subdir, jira_prefix, local_prefix
+):
+    """Find a task file by ID, including archived tasks."""
+    tasks_dir = os.path.join(artifacts_dir, tasks_subdir)
     if not os.path.isdir(tasks_dir):
         return None
 
@@ -525,36 +640,45 @@ def find_artifact_file_including_archived(artifacts_dir, identifier):
         if _is_companion_file(filename):
             continue
 
-        if identifier.startswith("RHAIRFE-"):
+        if identifier.startswith(jira_prefix):
             if filename == f"{identifier}.md":
                 return os.path.join(tasks_dir, filename)
 
-        if identifier.startswith("RFE-"):
+        if identifier.startswith(local_prefix):
             if filename == f"{identifier}.md" or filename.startswith(identifier + "-"):
                 return os.path.join(tasks_dir, filename)
 
     return None
 
 
-def find_removed_context_yaml(artifacts_dir, identifier):
-    """Find the removed-context YAML file for a given RFE ID or Jira key."""
-    tasks_dir = os.path.join(artifacts_dir, "rfe-tasks")
+def find_artifact_file_including_archived(artifacts_dir, identifier):
+    """Like find_artifact_file but includes archived artifacts (RFE-only)."""
+    return find_task_file_including_archived(
+        artifacts_dir, identifier, "rfe-tasks", "RHAIRFE-", "RFE-"
+    )
+
+
+def find_removed_context_yaml_in(
+    artifacts_dir, identifier, tasks_subdir, jira_prefix, local_prefix
+):
+    """Find a removed-context YAML file by ID in the given tasks subdirectory."""
+    tasks_dir = os.path.join(artifacts_dir, tasks_subdir)
     if not os.path.isdir(tasks_dir):
         return None
-
-    for filename in sorted(os.listdir(tasks_dir)):
-        if not filename.endswith("-removed-context.yaml"):
-            continue
-
-        if identifier.startswith("RHAIRFE-"):
-            if filename == f"{identifier}-removed-context.yaml":
-                return os.path.join(tasks_dir, filename)
-
-        if identifier.startswith("RFE-"):
-            if filename == f"{identifier}-removed-context.yaml":
-                return os.path.join(tasks_dir, filename)
-
+    if identifier.startswith(jira_prefix) or identifier.startswith(local_prefix):
+        path = os.path.join(tasks_dir, f"{identifier}-removed-context.yaml")
+        if os.path.isfile(path):
+            return path
     return None
+
+
+def find_removed_context_yaml(artifacts_dir, identifier):
+    """Find the removed-context YAML file for a given RFE/initiative ID or Jira key."""
+    if identifier.startswith("INIT-") or identifier.startswith("RHOAIENG-"):
+        return find_removed_context_yaml_in(
+            artifacts_dir, identifier, "initiatives", "RHOAIENG-", "INIT-"
+        )
+    return find_removed_context_yaml_in(artifacts_dir, identifier, "rfe-tasks", "RHAIRFE-", "RFE-")
 
 
 def find_removed_context_file(artifacts_dir, identifier):
@@ -578,26 +702,45 @@ def find_removed_context_file(artifacts_dir, identifier):
     return None
 
 
-def find_review_file(artifacts_dir, identifier):
-    """Find the review file for a given RFE ID or Jira key.
+def render_removed_context_comment(yaml_path, preamble):
+    """Read removed-context YAML and render postable blocks as markdown.
 
-    Looks in rfe-reviews/ for {identifier}-review.md.
+    Posts blocks with type 'genuine' or 'unclassified' (safety fallback).
+    Returns empty string if no blocks qualify.
     """
-    reviews_dir = os.path.join(artifacts_dir, "rfe-reviews")
+    with open(yaml_path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    if not data or "blocks" not in data:
+        return ""
+    postable_types = {"genuine", "unclassified"}
+    sections = []
+    for block in data["blocks"]:
+        if block.get("type", "unclassified") in postable_types:
+            heading = block.get("heading", "")
+            content = block.get("content", "")
+            sections.append(f"## {heading}\n{content}")
+    if not sections:
+        return ""
+    return preamble + "\n\n" + "\n\n".join(sections)
+
+
+def find_review_file(artifacts_dir, identifier):
+    """Find the review file for a given RFE/initiative ID or Jira key.
+
+    Looks in the appropriate reviews directory for {identifier}-review.md.
+    """
+    if identifier.startswith("RHOAIENG-") or identifier.startswith("INIT-"):
+        reviews_dir = os.path.join(artifacts_dir, "initiative-reviews")
+    else:
+        reviews_dir = os.path.join(artifacts_dir, "rfe-reviews")
+
     if not os.path.isdir(reviews_dir):
         return None
 
-    for filename in sorted(os.listdir(reviews_dir)):
-        if not filename.endswith("-review.md"):
-            continue
-
-        if identifier.startswith("RHAIRFE-"):
-            if filename == f"{identifier}-review.md":
-                return os.path.join(reviews_dir, filename)
-
-        if identifier.startswith("RFE-"):
-            if filename == f"{identifier}-review.md":
-                return os.path.join(reviews_dir, filename)
+    target = f"{identifier}-review.md"
+    review_path = os.path.join(reviews_dir, target)
+    if os.path.exists(review_path):
+        return review_path
 
     return None
 
@@ -656,6 +799,34 @@ def scan_review_files(artifacts_dir):
     return results
 
 
+def scan_initiative_task_files(artifacts_dir):
+    """Scan all Initiative task files and return their frontmatter.
+
+    Returns:
+        list of (path, frontmatter_dict) tuples, sorted by initiative_id.
+        Files without valid frontmatter are skipped with a warning.
+    """
+    initiatives_dir = os.path.join(artifacts_dir, "initiatives")
+    if not os.path.isdir(initiatives_dir):
+        return []
+
+    results = []
+    for filename in sorted(os.listdir(initiatives_dir)):
+        if not filename.endswith(".md"):
+            continue
+        if _is_companion_file(filename):
+            continue
+
+        path = os.path.join(initiatives_dir, filename)
+        try:
+            data, _ = read_frontmatter_validated(path, "initiative-task")
+            results.append((path, data))
+        except (ValidationError, Exception) as e:
+            print(f"Warning: skipping {filename}: {e}", file=sys.stderr)
+
+    return sorted(results, key=lambda x: x[1].get("initiative_id", ""))
+
+
 # ─── File Renaming (post-submit) ───────────────────────────────────────────────
 
 
@@ -712,6 +883,55 @@ def rename_to_jira_key(artifacts_dir, rfe_id, jira_key):
                 # Update frontmatter
                 update_frontmatter(new_path, {"rfe_id": jira_key}, "rfe-review")
                 break
+
+
+def rename_initiative_to_jira_key(artifacts_dir, initiative_id, jira_key):
+    """Rename INIT-NNN.md files to RHOAIENG-NNNN.md after submission.
+
+    Renames the task file, companion files, and review file.
+    Updates initiative_id in frontmatter to the new Jira key.
+    """
+    initiatives_dir = os.path.join(artifacts_dir, "initiatives")
+    reviews_dir = os.path.join(artifacts_dir, "initiative-reviews")
+
+    if os.path.isdir(initiatives_dir):
+        for filename in list(os.listdir(initiatives_dir)):
+            if not (filename == f"{initiative_id}.md" or filename.startswith(initiative_id + "-")):
+                continue
+            if not (filename.endswith(".md") or filename.endswith(".yaml")):
+                continue
+
+            old_path = os.path.join(initiatives_dir, filename)
+
+            # Companions must be matched before the fallback: anything that
+            # reaches the else branch is renamed to {jira_key}.md, which is
+            # also the main task file's new name, so an unhandled companion
+            # silently overwrites it.
+            if filename.endswith("-comments.md"):
+                new_name = f"{jira_key}-comments.md"
+            elif filename.endswith("-removed-context.yaml"):
+                new_name = f"{jira_key}-removed-context.yaml"
+            elif filename.endswith("-removed-context.md"):
+                new_name = f"{jira_key}-removed-context.md"
+            else:
+                new_name = f"{jira_key}.md"
+
+            new_path = os.path.join(initiatives_dir, new_name)
+            os.rename(old_path, new_path)
+
+            if new_name == f"{jira_key}.md":
+                update_frontmatter(
+                    new_path,
+                    {"initiative_id": jira_key, "status": "Submitted"},
+                    "initiative-task",
+                )
+
+    if os.path.isdir(reviews_dir):
+        old_review = os.path.join(reviews_dir, f"{initiative_id}-review.md")
+        if os.path.isfile(old_review):
+            new_review = os.path.join(reviews_dir, f"{jira_key}-review.md")
+            os.rename(old_review, new_review)
+            update_frontmatter(new_review, {"initiative_id": jira_key}, "initiative-review")
 
 
 # ─── Index Rebuilding ───────────────────────────────────────────────────────────
@@ -808,6 +1028,25 @@ def parse_child_artifact(path):
     else:
         priority_match = re.search(r"^\*\*Priority\*\*:\s*(.+)$", content, re.MULTILINE)
         priority = priority_match.group(1).strip() if priority_match else "Normal"
+
+    cleaned = strip_metadata(content)
+    return title, priority, content, cleaned
+
+
+def parse_child_initiative(path):
+    """Parse a child Initiative markdown file.
+
+    Returns: (title, priority, full_markdown, cleaned_markdown)
+    """
+    from jira_utils import strip_metadata
+
+    with open(path, encoding="utf-8") as f:
+        content = f.read()
+
+    data, body = read_frontmatter(path)
+
+    title = data.get("title", "Untitled")
+    priority = data.get("priority", "Normal")
 
     cleaned = strip_metadata(content)
     return title, priority, content, cleaned

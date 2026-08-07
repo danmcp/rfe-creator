@@ -63,6 +63,7 @@ def work_dirs(tmp_path, monkeypatch):
 
 def _fetch_args(tmp_path, jql="project = RHAIRFE", limit=None, data_dir=None):
     return SimpleNamespace(
+        type="rfe",
         jql=jql,
         limit=limit,
         data_dir=data_dir,

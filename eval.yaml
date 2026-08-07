@@ -25,10 +25,7 @@ permissions:
   allow:
     - "Skill"
     - "Agent"
-    - "Write(/tmp/rfe-assess/**)"
-    - "Write(/private/tmp/rfe-assess/**)"
-    - "Edit(/tmp/rfe-assess/**)"
-    - "Edit(/private/tmp/rfe-assess/**)"
+    - "Edit(tmp/rfe-assess/**)"
   deny: []
 
 # MLflow logging target

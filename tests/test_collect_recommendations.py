@@ -209,3 +209,65 @@ class TestCollectReassess:
         assert rc == 0
         groups = _parse_output(out)
         assert "RFE-001" in groups["DONE"]
+
+
+class TestCollectInitiative:
+    """Tests for --type initiative, which reads from initiative-reviews/ directory."""
+
+    @pytest.fixture(autouse=True)
+    def _init_dir(self, tmp_path):
+        os.makedirs(tmp_path / "artifacts" / "initiative-reviews")
+        orig = os.getcwd()
+        os.chdir(tmp_path)
+        self._art_dir = str(tmp_path)
+        yield
+        os.chdir(orig)
+
+    def test_groups_by_recommendation(self):
+        _write(
+            f"{self._art_dir}/artifacts/initiative-reviews/INIT-001-review.md",
+            REVIEW_TEMPLATE.format(
+                rfe_id="INIT-001",
+                score=9,
+                pass_val="true",
+                recommendation="submit",
+                auto_revised="false",
+            ),
+        )
+        _write(
+            f"{self._art_dir}/artifacts/initiative-reviews/INIT-002-review.md",
+            REVIEW_TEMPLATE.format(
+                rfe_id="INIT-002",
+                score=3,
+                pass_val="false",
+                recommendation="revise",
+                auto_revised="false",
+            ),
+        )
+        out, _, rc = _run(["--type", "initiative", "INIT-001", "INIT-002"])
+        assert rc == 0
+        groups = _parse_output(out)
+        assert "INIT-001" in groups["SUBMIT"]
+        assert "INIT-002" in groups["REVISE"]
+
+    def test_missing_initiative_review_goes_to_errors(self):
+        out, _, rc = _run(["--type", "initiative", "INIT-MISSING"])
+        assert rc == 0
+        groups = _parse_output(out)
+        assert "INIT-MISSING" in groups["ERRORS"]
+
+    def test_reassess_initiative(self):
+        _write(
+            f"{self._art_dir}/artifacts/initiative-reviews/INIT-001-review.md",
+            REVIEW_TEMPLATE.format(
+                rfe_id="INIT-001",
+                score=5,
+                pass_val="false",
+                recommendation="revise",
+                auto_revised="true",
+            ),
+        )
+        out, _, rc = _run(["--type", "initiative", "--reassess", "INIT-001"])
+        assert rc == 0
+        groups = _parse_output(out)
+        assert "INIT-001" in groups["REASSESS"]

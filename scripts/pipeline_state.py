@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Pipeline state machine for the thin dispatcher.
 
-Phase tracking, config, and transition logic for rfe.auto-fix.
+Phase tracking, config, and transition logic for rfe.auto-fix and
+initiative-auto-fix.
 
 Usage:
-    python3 scripts/pipeline_state.py init [--batch-size N] [--headless]
+    python3 scripts/pipeline_state.py init [--type rfe|initiative] [--batch-size N]
+                                          [--headless]
     python3 scripts/pipeline_state.py get-phase
     python3 scripts/pipeline_state.py set-phase <PHASE>
     python3 scripts/pipeline_state.py get-phase-config
@@ -87,255 +89,337 @@ PHASES = [
     "DONE",
 ]
 
-# ---------- Phase config ----------
+# ---------- Pipeline type config ----------
 
-PHASE_CONFIG = {
-    "BATCH_START": {"type": "noop"},
-    "FETCH": {
-        "type": "agent",
-        "prompt": ".claude/skills/rfe.review/prompts/fetch-agent.md",
-        "ids_file": "tmp/pipeline-active-ids.txt",
-        "poll_phase": "fetch",
-        "post_verify": "python3 scripts/verify_phase.py --phase fetch"
-        " --ids-file tmp/pipeline-active-ids.txt",
-        "vars": {"KEY": "{ID}"},
+PIPELINE_TYPES = {
+    "rfe": {
+        "review_prompts": ".claude/skills/rfe.review/prompts",
+        "split_prompt": ".claude/skills/rfe.split/prompts/split-agent.md",
+        "scorer_type": "rfe-scorer",
+        "rubric_path": ".context/assess-rfe/skills/assess-rfe/scripts/agent_prompt.md",
+        "feasibility_skill": ".claude/skills/rfe-feasibility-review/SKILL.md",
+        "alignment_skill": None,
+        "tasks_dir": "artifacts/rfe-tasks",
+        "reviews_dir": "artifacts/rfe-reviews",
+        "dispatch_skill": ".claude/skills/rfe.auto-fix/SKILL.md",
+        "poll_prefix": "",
     },
-    "SETUP": {
-        "type": "script",
-        "command": (
-            "bash scripts/bootstrap-assess-rfe.sh &"
-            " bash scripts/fetch-architecture-context.sh & wait"
-        ),
-    },
-    "ASSESS": {
-        "type": "agent",
-        "prompt": ".claude/skills/rfe.review/prompts/assess-agent.md",
-        "ids_file": "tmp/pipeline-active-ids.txt",
-        "subagent_type": "rfe-scorer",
-        "poll_phase": "assess",
-        "parallel": [
-            {
-                "prompt": ".claude/skills/rfe-feasibility-review/SKILL.md",
-                "poll_phase": "feasibility",
-                "vars": {"ID": "{ID}"},
-            },
-        ],
-        "parallel_timeout": 300,
-        "pre_script": "python3 scripts/prep_assess.py {ID}",
-        "post_verify": "python3 scripts/verify_phase.py --phase assess"
-        " --ids-file tmp/pipeline-active-ids.txt",
-        "vars": {
-            "KEY": "{ID}",
-            "DATA_FILE": "tmp/rfe-assess/single/{ID}.md",
-            "RUN_DIR": "tmp/rfe-assess/single",
-            "PROMPT_PATH": ".context/assess-rfe/skills/assess-rfe/scripts/agent_prompt.md",
-        },
-    },
-    "REVIEW": {
-        "type": "agent",
-        "prompt": ".claude/skills/rfe.review/prompts/review-agent.md",
-        "ids_file": "tmp/pipeline-active-ids.txt",
-        "poll_phase": "review",
-        "post_verify": "python3 scripts/verify_phase.py --phase review"
-        " --ids-file tmp/pipeline-active-ids.txt",
-        "vars": {
-            "FIRST_PASS": "true",
-            "ID": "{ID}",
-            "ASSESS_PATH": "tmp/rfe-assess/single/{ID}.result.md",
-            "FEASIBILITY_PATH": "artifacts/rfe-reviews/{ID}-feasibility.md",
-        },
-    },
-    "REVISE": {
-        "type": "agent",
-        "prompt": ".claude/skills/rfe.review/prompts/revise-agent.md",
-        "ids_file": "tmp/pipeline-revise-ids.txt",
-        "poll_phase": "revise",
-        "vars": {"ID": "{ID}"},
-    },
-    "FIXUP": {
-        "type": "script",
-        "command": "python3 scripts/check_revised.py --batch",
-        "ids_file": "tmp/pipeline-revise-ids.txt",
-    },
-    # --- Reassess loop ---
-    "REASSESS_CHECK": {"type": "noop"},
-    "REASSESS_SAVE": {
-        "type": "script",
-        "command": "python3 scripts/reassess_save.py",
-    },
-    "REASSESS_ASSESS": {
-        "type": "agent",
-        "prompt": ".claude/skills/rfe.review/prompts/assess-agent.md",
-        "ids_file": "tmp/pipeline-reassess-ids.txt",
-        "subagent_type": "rfe-scorer",
-        "poll_phase": "assess",
-        "pre_script": "python3 scripts/prep_assess.py {ID}",
-        # NO "parallel" — feasibility NOT re-checked (invariant 4.2/5.4)
-        "post_verify": "python3 scripts/verify_phase.py --phase assess"
-        " --ids-file tmp/pipeline-reassess-ids.txt",
-        "vars": {
-            "KEY": "{ID}",
-            "DATA_FILE": "tmp/rfe-assess/single/{ID}.md",
-            "RUN_DIR": "tmp/rfe-assess/single",
-            "PROMPT_PATH": ".context/assess-rfe/skills/assess-rfe/scripts/agent_prompt.md",
-        },
-    },
-    "REASSESS_REVIEW": {
-        "type": "agent",
-        "prompt": ".claude/skills/rfe.review/prompts/review-agent.md",
-        "ids_file": "tmp/pipeline-reassess-ids.txt",
-        "poll_phase": "review",
-        "post_verify": "python3 scripts/verify_phase.py --phase review"
-        " --ids-file tmp/pipeline-reassess-ids.txt",
-        "vars": {
-            "FIRST_PASS": "false",
-            "ID": "{ID}",
-            "ASSESS_PATH": "tmp/rfe-assess/single/{ID}.result.md",
-            "FEASIBILITY_PATH": "artifacts/rfe-reviews/{ID}-feasibility.md",
-        },
-    },
-    "REASSESS_RESTORE": {
-        "type": "script",
-        "command": "python3 scripts/preserve_review_state.py restore",
-        "ids_file": "tmp/pipeline-reassess-ids.txt",
-    },
-    "REASSESS_REVISE": {
-        "type": "agent",
-        "prompt": ".claude/skills/rfe.review/prompts/revise-agent.md",
-        "ids_file": "tmp/pipeline-revise-ids.txt",
-        "poll_phase": "revise",
-        "vars": {"ID": "{ID}"},
-    },
-    "REASSESS_FIXUP": {
-        "type": "script",
-        "command": "python3 scripts/check_revised.py --batch",
-        "ids_file": "tmp/pipeline-revise-ids.txt",
-    },
-    # --- Collect + Split ---
-    "COLLECT": {"type": "noop"},
-    "SPLIT": {
-        "type": "agent",
-        "prompt": ".claude/skills/rfe.split/prompts/split-agent.md",
-        "ids_file": "tmp/pipeline-split-ids.txt",
-        "poll_phase": "split",
-        "vars": {
-            "ID": "{ID}",
-            "TASK_FILE": "artifacts/rfe-tasks/{ID}.md",
-            "REVIEW_FILE": "artifacts/rfe-reviews/{ID}-review.md",
-        },
-    },
-    "SPLIT_COLLECT": {
-        "type": "script",
-        "command": "python3 scripts/split_collect.py",
-    },
-    "SPLIT_PIPELINE_START": {"type": "noop"},
-    "SPLIT_ASSESS": {
-        "type": "agent",
-        "prompt": ".claude/skills/rfe.review/prompts/assess-agent.md",
-        "ids_file": "tmp/pipeline-split-children-ids.txt",
-        "subagent_type": "rfe-scorer",
-        "poll_phase": "assess",
-        "pre_script": "python3 scripts/prep_assess.py {ID}",
-        "parallel": [
-            {
-                "prompt": ".claude/skills/rfe-feasibility-review/SKILL.md",
-                "poll_phase": "feasibility",
-                "vars": {"ID": "{ID}"},
-            },
-        ],
-        "parallel_timeout": 300,
-        "post_verify": "python3 scripts/verify_phase.py --phase assess"
-        " --ids-file tmp/pipeline-split-children-ids.txt",
-        "vars": {
-            "KEY": "{ID}",
-            "DATA_FILE": "tmp/rfe-assess/single/{ID}.md",
-            "RUN_DIR": "tmp/rfe-assess/single",
-            "PROMPT_PATH": ".context/assess-rfe/skills/assess-rfe/scripts/agent_prompt.md",
-        },
-    },
-    "SPLIT_REVIEW": {
-        "type": "agent",
-        "prompt": ".claude/skills/rfe.review/prompts/review-agent.md",
-        "ids_file": "tmp/pipeline-split-children-ids.txt",
-        "poll_phase": "review",
-        "post_verify": "python3 scripts/verify_phase.py --phase review"
-        " --ids-file tmp/pipeline-split-children-ids.txt",
-        "vars": {
-            "FIRST_PASS": "true",
-            "ID": "{ID}",
-            "ASSESS_PATH": "tmp/rfe-assess/single/{ID}.result.md",
-            "FEASIBILITY_PATH": "artifacts/rfe-reviews/{ID}-feasibility.md",
-        },
-    },
-    "SPLIT_REVISE": {
-        "type": "agent",
-        "prompt": ".claude/skills/rfe.review/prompts/revise-agent.md",
-        "ids_file": "tmp/pipeline-revise-ids.txt",
-        "poll_phase": "revise",
-        "vars": {"ID": "{ID}"},
-    },
-    "SPLIT_FIXUP": {
-        "type": "script",
-        "command": "python3 scripts/check_revised.py --batch",
-        "ids_file": "tmp/pipeline-revise-ids.txt",
-    },
-    "SPLIT_SAVE": {
-        "type": "script",
-        "command": "python3 scripts/preserve_review_state.py save",
-        "ids_file": "tmp/pipeline-revise-ids.txt",
-    },
-    "SPLIT_REASSESS": {
-        "type": "agent",
-        "prompt": ".claude/skills/rfe.review/prompts/assess-agent.md",
-        "ids_file": "tmp/pipeline-revise-ids.txt",
-        "subagent_type": "rfe-scorer",
-        "poll_phase": "assess",
-        "pre_script": "python3 scripts/prep_assess.py {ID}",
-        "post_verify": "python3 scripts/verify_phase.py --phase assess"
-        " --ids-file tmp/pipeline-revise-ids.txt",
-        "vars": {
-            "KEY": "{ID}",
-            "DATA_FILE": "tmp/rfe-assess/single/{ID}.md",
-            "RUN_DIR": "tmp/rfe-assess/single",
-            "PROMPT_PATH": ".context/assess-rfe/skills/assess-rfe/scripts/agent_prompt.md",
-        },
-    },
-    "SPLIT_RE_REVIEW": {
-        "type": "agent",
-        "prompt": ".claude/skills/rfe.review/prompts/review-agent.md",
-        "ids_file": "tmp/pipeline-revise-ids.txt",
-        "poll_phase": "review",
-        "post_verify": "python3 scripts/verify_phase.py --phase review"
-        " --ids-file tmp/pipeline-revise-ids.txt",
-        "vars": {
-            "FIRST_PASS": "false",
-            "ID": "{ID}",
-            "ASSESS_PATH": "tmp/rfe-assess/single/{ID}.result.md",
-            "FEASIBILITY_PATH": "artifacts/rfe-reviews/{ID}-feasibility.md",
-        },
-    },
-    "SPLIT_RESTORE": {
-        "type": "script",
-        "command": "python3 scripts/preserve_review_state.py restore",
-        "ids_file": "tmp/pipeline-revise-ids.txt",
-    },
-    "SPLIT_CORRECTION_CHECK": {"type": "noop"},
-    # --- Batch control + retry ---
-    "BATCH_DONE": {"type": "noop"},
-    "ERROR_COLLECT": {
-        "type": "script",
-        "command": "python3 scripts/error_collect.py",
-    },
-    # --- Terminal ---
-    "REPORT": {
-        "type": "script",
-        "command": (
-            "python3 scripts/generate_run_report.py"
-            " --start-time {start_time}"
-            " --batch-size {batch_size}"
-        ),
+    "initiative": {
+        "review_prompts": ".claude/skills/initiative-review/prompts",
+        "split_prompt": ".claude/skills/initiative-split/prompts/split-agent.md",
+        "scorer_type": "initiative-scorer",
+        "rubric_path": ".context/assess-rfe/skills/assess-initiative/scripts/agent_prompt.md",
+        "feasibility_skill": ".claude/skills/initiative-feasibility-review/SKILL.md",
+        "alignment_skill": ".claude/skills/strategic-alignment-review/SKILL.md",
+        "tasks_dir": "artifacts/initiatives",
+        "reviews_dir": "artifacts/initiative-reviews",
+        "dispatch_skill": ".claude/skills/initiative-auto-fix/SKILL.md",
+        "poll_prefix": "initiative-",
     },
 }
+
+
+# ---------- Conditional parallel agent helpers ----------
+
+
+def _has_rhaistrat_parent(rfe_id, state):
+    """Check if an initiative has a RHAISTRAT parent_key in its frontmatter."""
+    if state.get("type") != "initiative":
+        return False
+    path = os.path.join(PIPELINE_TYPES["initiative"]["tasks_dir"], f"{rfe_id}.md")
+    if not os.path.exists(path):
+        return False
+    with open(path) as f:
+        content = f.read()
+    parts = content.split("---", 2)
+    if len(parts) < 3:
+        return False
+    try:
+        fm = yaml.safe_load(parts[1])
+    except yaml.YAMLError:
+        return False
+    pk = (fm or {}).get("parent_key", "")
+    return bool(pk and pk.startswith("RHAISTRAT-"))
+
+
+def _check_condition(condition, rfe_id, state):
+    """Evaluate a named condition for a specific ID."""
+    if condition == "has_rhaistrat_parent":
+        return _has_rhaistrat_parent(rfe_id, state)
+    return True
+
+
+def _write_poll_stub(poll_phase, rfe_id):
+    """Write a stub completion file for a skipped conditional agent."""
+    from check_review_progress import PHASE_CHECKS
+
+    path = PHASE_CHECKS[poll_phase](rfe_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(
+            "---\nresult: not_assessed\nreason: skipped by pipeline (no RHAISTRAT parent)\n---\n"
+        )
+
+
+# ---------- Phase config (built from pipeline type) ----------
+
+
+def _build_phase_config(pipeline_type):
+    """Build PHASE_CONFIG for the given pipeline type."""
+    t = PIPELINE_TYPES[pipeline_type]
+    pp = t["poll_prefix"]
+    vfy = f"python3 scripts/verify_phase.py --type {pipeline_type}"
+
+    def _assess_vars():
+        return {
+            "KEY": "{ID}",
+            "DATA_FILE": "tmp/rfe-assess/single/{ID}.md",
+            "RUN_DIR": "tmp/rfe-assess/single",
+            "PROMPT_PATH": t["rubric_path"],
+        }
+
+    def _review_vars(first_pass):
+        v = {
+            "FIRST_PASS": first_pass,
+            "ID": "{ID}",
+            "ASSESS_PATH": "tmp/rfe-assess/single/{ID}.result.md",
+            "FEASIBILITY_PATH": f"{t['reviews_dir']}/{{ID}}-feasibility.md",
+        }
+        if t["alignment_skill"]:
+            v["ALIGNMENT_PATH"] = f"{t['reviews_dir']}/{{ID}}-alignment.md"
+        return v
+
+    def _assess_parallel():
+        parallel = [
+            {
+                "prompt": t["feasibility_skill"],
+                "poll_phase": f"{pp}feasibility",
+                "vars": {"ID": "{ID}"},
+            },
+        ]
+        if t["alignment_skill"]:
+            parallel.append(
+                {
+                    "prompt": t["alignment_skill"],
+                    "poll_phase": f"{pp}alignment",
+                    "vars": {"ID": "{ID}"},
+                    "condition": "has_rhaistrat_parent",
+                }
+            )
+        return parallel
+
+    fixup_cmd = f"python3 scripts/check_revised.py --batch --type {pipeline_type}"
+
+    return {
+        "BATCH_START": {"type": "noop"},
+        "FETCH": {
+            "type": "agent",
+            "prompt": f"{t['review_prompts']}/fetch-agent.md",
+            "ids_file": "tmp/pipeline-active-ids.txt",
+            "poll_phase": f"{pp}fetch",
+            "post_verify": f"{vfy} --phase fetch --ids-file tmp/pipeline-active-ids.txt",
+            "vars": {"KEY": "{ID}"},
+        },
+        "SETUP": {
+            "type": "script",
+            "command": (
+                f"bash scripts/bootstrap-assess-rfe.sh --type {pipeline_type} &"
+                " bash scripts/fetch-architecture-context.sh & wait"
+            ),
+        },
+        "ASSESS": {
+            "type": "agent",
+            "prompt": f"{t['review_prompts']}/assess-agent.md",
+            "ids_file": "tmp/pipeline-active-ids.txt",
+            "subagent_type": t["scorer_type"],
+            "poll_phase": f"{pp}assess",
+            "parallel": _assess_parallel(),
+            "parallel_timeout": 300,
+            "pre_script": "python3 scripts/prep_assess.py {ID}",
+            "post_verify": f"{vfy} --phase assess --ids-file tmp/pipeline-active-ids.txt",
+            "vars": _assess_vars(),
+        },
+        "REVIEW": {
+            "type": "agent",
+            "prompt": f"{t['review_prompts']}/review-agent.md",
+            "ids_file": "tmp/pipeline-active-ids.txt",
+            "poll_phase": f"{pp}review",
+            "post_verify": f"{vfy} --phase review --ids-file tmp/pipeline-active-ids.txt",
+            "vars": _review_vars("true"),
+        },
+        "REVISE": {
+            "type": "agent",
+            "prompt": f"{t['review_prompts']}/revise-agent.md",
+            "ids_file": "tmp/pipeline-revise-ids.txt",
+            "poll_phase": f"{pp}revise",
+            "vars": {"ID": "{ID}"},
+        },
+        "FIXUP": {
+            "type": "script",
+            "command": fixup_cmd,
+            "ids_file": "tmp/pipeline-revise-ids.txt",
+        },
+        # --- Reassess loop ---
+        "REASSESS_CHECK": {"type": "noop"},
+        "REASSESS_SAVE": {
+            "type": "script",
+            "command": f"python3 scripts/reassess_save.py --type {pipeline_type}",
+        },
+        "REASSESS_ASSESS": {
+            "type": "agent",
+            "prompt": f"{t['review_prompts']}/assess-agent.md",
+            "ids_file": "tmp/pipeline-reassess-ids.txt",
+            "subagent_type": t["scorer_type"],
+            "poll_phase": f"{pp}assess",
+            "pre_script": "python3 scripts/prep_assess.py {ID}",
+            # NO "parallel" — feasibility NOT re-checked (invariant 4.2/5.4)
+            "post_verify": f"{vfy} --phase assess --ids-file tmp/pipeline-reassess-ids.txt",
+            "vars": _assess_vars(),
+        },
+        "REASSESS_REVIEW": {
+            "type": "agent",
+            "prompt": f"{t['review_prompts']}/review-agent.md",
+            "ids_file": "tmp/pipeline-reassess-ids.txt",
+            "poll_phase": f"{pp}review",
+            "post_verify": f"{vfy} --phase review --ids-file tmp/pipeline-reassess-ids.txt",
+            "vars": _review_vars("false"),
+        },
+        "REASSESS_RESTORE": {
+            "type": "script",
+            "command": "python3 scripts/preserve_review_state.py restore",
+            "ids_file": "tmp/pipeline-reassess-ids.txt",
+        },
+        "REASSESS_REVISE": {
+            "type": "agent",
+            "prompt": f"{t['review_prompts']}/revise-agent.md",
+            "ids_file": "tmp/pipeline-revise-ids.txt",
+            "poll_phase": f"{pp}revise",
+            "vars": {"ID": "{ID}"},
+        },
+        "REASSESS_FIXUP": {
+            "type": "script",
+            "command": fixup_cmd,
+            "ids_file": "tmp/pipeline-revise-ids.txt",
+        },
+        # --- Collect + Split ---
+        "COLLECT": {"type": "noop"},
+        "SPLIT": {
+            "type": "agent",
+            "prompt": t["split_prompt"],
+            "ids_file": "tmp/pipeline-split-ids.txt",
+            "poll_phase": f"{pp}split",
+            "vars": {
+                "ID": "{ID}",
+                "TASK_FILE": f"{t['tasks_dir']}/{{ID}}.md",
+                "REVIEW_FILE": f"{t['reviews_dir']}/{{ID}}-review.md",
+            },
+        },
+        "SPLIT_COLLECT": {
+            "type": "script",
+            "command": f"python3 scripts/split_collect.py --type {pipeline_type}",
+        },
+        "SPLIT_PIPELINE_START": {"type": "noop"},
+        "SPLIT_ASSESS": {
+            "type": "agent",
+            "prompt": f"{t['review_prompts']}/assess-agent.md",
+            "ids_file": "tmp/pipeline-split-children-ids.txt",
+            "subagent_type": t["scorer_type"],
+            "poll_phase": f"{pp}assess",
+            "pre_script": "python3 scripts/prep_assess.py {ID}",
+            "parallel": _assess_parallel(),
+            "parallel_timeout": 300,
+            "post_verify": f"{vfy} --phase assess --ids-file tmp/pipeline-split-children-ids.txt",
+            "vars": _assess_vars(),
+        },
+        "SPLIT_REVIEW": {
+            "type": "agent",
+            "prompt": f"{t['review_prompts']}/review-agent.md",
+            "ids_file": "tmp/pipeline-split-children-ids.txt",
+            "poll_phase": f"{pp}review",
+            "post_verify": f"{vfy} --phase review --ids-file tmp/pipeline-split-children-ids.txt",
+            "vars": _review_vars("true"),
+        },
+        "SPLIT_REVISE": {
+            "type": "agent",
+            "prompt": f"{t['review_prompts']}/revise-agent.md",
+            "ids_file": "tmp/pipeline-revise-ids.txt",
+            "poll_phase": f"{pp}revise",
+            "vars": {"ID": "{ID}"},
+        },
+        "SPLIT_FIXUP": {
+            "type": "script",
+            "command": fixup_cmd,
+            "ids_file": "tmp/pipeline-revise-ids.txt",
+        },
+        "SPLIT_SAVE": {
+            "type": "script",
+            "command": "python3 scripts/preserve_review_state.py save",
+            "ids_file": "tmp/pipeline-revise-ids.txt",
+        },
+        "SPLIT_REASSESS": {
+            "type": "agent",
+            "prompt": f"{t['review_prompts']}/assess-agent.md",
+            "ids_file": "tmp/pipeline-revise-ids.txt",
+            "subagent_type": t["scorer_type"],
+            "poll_phase": f"{pp}assess",
+            "pre_script": "python3 scripts/prep_assess.py {ID}",
+            "post_verify": f"{vfy} --phase assess --ids-file tmp/pipeline-revise-ids.txt",
+            "vars": _assess_vars(),
+        },
+        "SPLIT_RE_REVIEW": {
+            "type": "agent",
+            "prompt": f"{t['review_prompts']}/review-agent.md",
+            "ids_file": "tmp/pipeline-revise-ids.txt",
+            "poll_phase": f"{pp}review",
+            "post_verify": f"{vfy} --phase review --ids-file tmp/pipeline-revise-ids.txt",
+            "vars": _review_vars("false"),
+        },
+        "SPLIT_RESTORE": {
+            "type": "script",
+            "command": "python3 scripts/preserve_review_state.py restore",
+            "ids_file": "tmp/pipeline-revise-ids.txt",
+        },
+        "SPLIT_CORRECTION_CHECK": {"type": "noop"},
+        # --- Batch control + retry ---
+        "BATCH_DONE": {"type": "noop"},
+        "ERROR_COLLECT": {
+            "type": "script",
+            "command": f"python3 scripts/error_collect.py --type {pipeline_type}",
+        },
+        # --- Terminal ---
+        "REPORT": {
+            "type": "script",
+            "command": (
+                f"python3 scripts/generate_run_report.py --type {pipeline_type}"
+                " --start-time {start_time}"
+                " --batch-size {batch_size}"
+            ),
+        },
+    }
+
+
+def _get_config(state):
+    """Get PHASE_CONFIG for the pipeline type in the current state."""
+    return _build_phase_config(state.get("type", "rfe"))
+
+
+def _wave_size(state, config):
+    """IDs to launch per wave for an agent phase.
+
+    Each ID costs 1 + n_parallel concurrent agents (the main agent plus its
+    parallel companions — feasibility, and alignment for initiatives), so
+    batch_size is spent as an agent budget rather than an ID count.
+
+    The division rounds UP: flooring strands a partial slot on every batch
+    that isn't an exact multiple of the divisor, which is what made small
+    batches crawl — a speedrun batch of 5 ran 2 IDs per wave for RFEs and 1
+    for initiatives. Rounding up costs at most n_parallel agents over budget
+    and keeps a small batch to a single wave more often.
+    """
+    batch_size = int(state.get("batch_size", 50))
+    n_parallel = len(config.get("parallel", []))
+    return max(1, -(-batch_size // (1 + n_parallel)))
+
 
 # ---------- State helpers ----------
 
@@ -376,6 +460,26 @@ def _copy_ids(src, dst):
     """Copy an ID file."""
     os.makedirs(os.path.dirname(dst) or "tmp", exist_ok=True)
     shutil.copy2(src, dst)
+
+
+def _save_originals(ids, pipeline_type):
+    """Save task files to originals dir for IDs that don't have one yet.
+
+    Needed for newly-created items (not fetched from Jira) so that
+    check_revised.py --batch can detect whether the revise agent changed
+    anything.
+    """
+    t = PIPELINE_TYPES[pipeline_type]
+    tasks_dir = t["tasks_dir"]
+    originals_dir = tasks_dir.replace("rfe-tasks", "rfe-originals").replace(
+        "initiatives", "initiative-originals"
+    )
+    os.makedirs(originals_dir, exist_ok=True)
+    for rfe_id in ids:
+        orig = os.path.join(originals_dir, f"{rfe_id}.md")
+        task = os.path.join(tasks_dir, f"{rfe_id}.md")
+        if not os.path.exists(orig) and os.path.exists(task):
+            shutil.copy2(task, orig)
 
 
 def _run_script(cmd):
@@ -431,6 +535,8 @@ def advance(state, dry_run=False):
     Returns (next_phase, summary_line).
     """
     phase = state["phase"]
+    pipeline_type = state.get("type", "rfe")
+    type_flag = f"--type {pipeline_type}"
 
     # --- BATCH_START: reset counters, populate active IDs ---
     if phase == "BATCH_START":
@@ -450,6 +556,8 @@ def advance(state, dry_run=False):
             out = _run_script(f"python3 scripts/filter_for_revision.py {' '.join(active_ids)}")
             revise_ids = out.split() if out else []
             _write_ids("tmp/pipeline-revise-ids.txt", revise_ids)
+            if revise_ids:
+                _save_originals(revise_ids, pipeline_type)
         return "REVISE", "REVIEW → REVISE"
 
     if phase == "REASSESS_RESTORE":
@@ -465,6 +573,8 @@ def advance(state, dry_run=False):
                 )
                 revise_ids = out.split() if out else []
                 _write_ids("tmp/pipeline-revise-ids.txt", revise_ids)
+                if revise_ids:
+                    _save_originals(revise_ids, pipeline_type)
         return "REASSESS_REVISE", "REASSESS_RESTORE → REASSESS_REVISE"
 
     if phase == "SPLIT_REVIEW":
@@ -473,6 +583,8 @@ def advance(state, dry_run=False):
             out = _run_script(f"python3 scripts/filter_for_revision.py {' '.join(child_ids)}")
             revise_ids = out.split() if out else []
             _write_ids("tmp/pipeline-revise-ids.txt", revise_ids)
+            if revise_ids:
+                _save_originals(revise_ids, pipeline_type)
         return "SPLIT_REVISE", "SPLIT_REVIEW → SPLIT_REVISE"
 
     # --- Linear sequences ---
@@ -488,8 +600,9 @@ def advance(state, dry_run=False):
     # --- REASSESS_CHECK decision ---
     if phase == "REASSESS_CHECK":
         active_ids = _read_ids("tmp/pipeline-active-ids.txt")
+        ids_str = " ".join(active_ids)
         out = _run_script(
-            f"python3 scripts/collect_recommendations.py --reassess {' '.join(active_ids)}"
+            f"python3 scripts/collect_recommendations.py {type_flag} --reassess {ids_str}"
         )
         reassess_ids = _parse_line_ids(out, "REASSESS")
         cycle = state.get("reassess_cycle", 0)
@@ -510,7 +623,9 @@ def advance(state, dry_run=False):
     # --- COLLECT decision ---
     if phase == "COLLECT":
         active_ids = _read_ids("tmp/pipeline-active-ids.txt")
-        out = _run_script(f"python3 scripts/collect_recommendations.py {' '.join(active_ids)}")
+        out = _run_script(
+            f"python3 scripts/collect_recommendations.py {type_flag} {' '.join(active_ids)}"
+        )
         split_ids = _parse_line_ids(out, "SPLIT")
         # Build summary counts from collect output
         counts = {}
@@ -542,7 +657,9 @@ def advance(state, dry_run=False):
     if phase == "SPLIT_CORRECTION_CHECK":
         child_ids = _read_ids("tmp/pipeline-split-children-ids.txt")
         if child_ids:
-            out = _run_script(f"python3 scripts/check_right_sized.py {' '.join(child_ids)}")
+            out = _run_script(
+                f"python3 scripts/check_right_sized.py {type_flag} {' '.join(child_ids)}"
+            )
             undersized = out.split("RESPLIT=")[1].split() if "RESPLIT=" in out else []
         else:
             undersized = []
@@ -569,7 +686,8 @@ def advance(state, dry_run=False):
         if active_ids:
             try:
                 out = _run_script(
-                    f"python3 scripts/batch_summary.py --counts-only {' '.join(active_ids)}"
+                    f"python3 scripts/batch_summary.py {type_flag}"
+                    f" --counts-only {' '.join(active_ids)}"
                 )
                 batch_stats = out.strip()
             except Exception:
@@ -582,7 +700,8 @@ def advance(state, dry_run=False):
             all_ids = _read_ids("tmp/pipeline-all-ids.txt")
             if all_ids:
                 out = _run_script(
-                    f"python3 scripts/collect_recommendations.py --errors {' '.join(all_ids)}"
+                    f"python3 scripts/collect_recommendations.py {type_flag}"
+                    f" --errors {' '.join(all_ids)}"
                 )
                 error_ids = _parse_line_ids(out, "ERRORS")
                 if error_ids:
@@ -617,6 +736,7 @@ def advance(state, dry_run=False):
 
 def cmd_init(args):
     parser = argparse.ArgumentParser(prog="pipeline_state.py init")
+    parser.add_argument("--type", choices=["rfe", "initiative"], default="rfe")
     parser.add_argument("--batch-size", type=int, default=50)
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--announce-complete", action="store_true")
@@ -630,6 +750,7 @@ def cmd_init(args):
         os.remove(DISPATCH_MARKER)
     state = {
         "phase": "INIT",
+        "type": opts.type,
         "batch": 0,
         "total_batches": 0,
         "headless": opts.headless,
@@ -639,9 +760,12 @@ def cmd_init(args):
         "reassess_cycle": 0,
         "correction_cycle": 0,
         "retry_cycle": 0,
+        # Batch slot error_collect allocates for the retry pass. Recorded so a
+        # re-run refills that slot instead of allocating a second one.
+        "retry_batch": None,
     }
     _save_state(state)
-    print(f"Initialized pipeline state: batch_size={opts.batch_size}")
+    print(f"Initialized pipeline state: type={opts.type} batch_size={opts.batch_size}")
 
 
 def cmd_get_phase(args):
@@ -662,7 +786,7 @@ def cmd_set_phase(args):
 def cmd_get_phase_config(args):
     state = _load_state()
     phase = state["phase"]
-    config = dict(PHASE_CONFIG.get(phase, {"type": "noop"}))
+    config = dict(_get_config(state).get(phase, {"type": "noop"}))
     config["phase"] = phase
     config.pop("command", None)
     config.pop("pre_script", None)
@@ -670,9 +794,7 @@ def cmd_get_phase_config(args):
     if config.get("type") == "script":
         config.pop("ids_file", None)
     if config.get("type") == "agent":
-        max_concurrent = int(state.get("batch_size", 50))
-        n_parallel = len(config.get("parallel", []))
-        config["wave_size"] = max(1, max_concurrent // (1 + n_parallel))
+        config["wave_size"] = _wave_size(state, config)
     print(yaml.dump(config, default_flow_style=False, sort_keys=False), end="")
 
 
@@ -685,7 +807,7 @@ def cmd_run_phase(args):
     """
     state = _load_state()
     phase = state["phase"]
-    config = PHASE_CONFIG.get(phase, {"type": "noop"})
+    config = _get_config(state).get(phase, {"type": "noop"})
     phase_type = config.get("type", "noop")
     if phase_type != "script":
         print(f"run-phase: phase {phase} is type '{phase_type}', not 'script'", file=sys.stderr)
@@ -754,9 +876,10 @@ def cmd_next_action(args):
         )
         sys.exit(1)
 
+    phase_config = _get_config(state)
     for _ in range(MAX_NEXT_ACTION_ITERATIONS):
         phase = state["phase"]
-        config = PHASE_CONFIG.get(phase, {"type": "noop"})
+        config = phase_config.get(phase, {"type": "noop"})
         phase_type = config.get("type", "noop")
 
         # --- DONE ---
@@ -836,10 +959,7 @@ def cmd_next_action(args):
                 print(summary, file=sys.stderr)
                 continue
 
-            # Compute wave size
-            max_concurrent = int(state.get("batch_size", 50))
-            n_parallel = len(config.get("parallel", []))
-            wave_size = max(1, max_concurrent // (1 + n_parallel))
+            wave_size = _wave_size(state, config)
 
             wave_ids = remaining[:wave_size]
             wave_num = 1 + (len(all_ids) - len(remaining)) // wave_size
@@ -871,6 +991,11 @@ def cmd_next_action(args):
 
                 # Parallel agents
                 for par in config.get("parallel", []):
+                    cond = par.get("condition")
+                    if cond and not _check_condition(cond, rfe_id, state):
+                        if par.get("poll_phase"):
+                            _write_poll_stub(par["poll_phase"], rfe_id)
+                        continue
                     pentry = {}
                     if par.get("subagent_type"):
                         pentry["subagent_type"] = par["subagent_type"]
@@ -927,7 +1052,7 @@ def cmd_wait_for_wave(args):
 
     state = _load_state()
     phase = state["phase"]
-    config = PHASE_CONFIG.get(phase, {"type": "noop"})
+    config = _get_config(state).get(phase, {"type": "noop"})
 
     poll_phase = config.get("poll_phase")
     if not poll_phase:
@@ -991,7 +1116,7 @@ def cmd_advance(args):
     dry_run = "--dry-run" in args
     state = _load_state()
     phase = state["phase"]
-    config = PHASE_CONFIG.get(phase, {"type": "noop"})
+    config = _get_config(state).get(phase, {"type": "noop"})
     phase_type = config.get("type", "noop")
     # Guard: script phases must be dispatched via run-phase first
     if phase_type == "script" and not dry_run:
@@ -1106,14 +1231,15 @@ def cmd_diagnose(args):
 
     # Check active IDs against artifacts
     active = _read_ids("tmp/pipeline-active-ids.txt")
+    t = PIPELINE_TYPES.get(state.get("type", "rfe"), PIPELINE_TYPES["rfe"])
     if active:
         missing_task = []
         missing_review = []
         error_ids = []
         for rfe_id in active:
-            if not os.path.exists(f"artifacts/rfe-tasks/{rfe_id}.md"):
+            if not os.path.exists(f"{t['tasks_dir']}/{rfe_id}.md"):
                 missing_task.append(rfe_id)
-            review = f"artifacts/rfe-reviews/{rfe_id}-review.md"
+            review = f"{t['reviews_dir']}/{rfe_id}-review.md"
             if os.path.exists(review):
                 try:
                     from artifact_utils import read_frontmatter
@@ -1153,12 +1279,13 @@ def cmd_dispatch_context(args):
         return  # Not in a pipeline run — nothing to inject
     state = _load_state()
     phase = state["phase"]
+    t = PIPELINE_TYPES.get(state.get("type", "rfe"), PIPELINE_TYPES["rfe"])
     # INIT is a setup marker, not a dispatchable phase
     if phase not in PHASES:
         print(f"[PIPELINE STATE RECOVERY] Setup in progress (phase: {phase})")
         print(
             "Setup is not yet complete. Re-read SKILL.md"
-            " (.claude/skills/rfe.auto-fix/SKILL.md) and resume"
+            f" ({t['dispatch_skill']}) and resume"
             " the setup steps from where you left off."
         )
         return
@@ -1166,7 +1293,7 @@ def cmd_dispatch_context(args):
     if phase == "DONE":
         print("[PIPELINE STATE RECOVERY] Pipeline complete (phase: DONE)")
         return
-    config = PHASE_CONFIG.get(phase, {"type": "noop"})
+    config = _get_config(state).get(phase, {"type": "noop"})
     phase_type = config.get("type", "noop")
     print(f"[PIPELINE STATE RECOVERY] Current phase: {phase} (type: {phase_type})")
     print(f"Batch: {state.get('batch', 0)}/{state.get('total_batches', 0)}")

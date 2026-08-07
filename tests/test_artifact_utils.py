@@ -15,6 +15,7 @@ from artifact_utils import (
     apply_defaults,
     read_frontmatter,
     read_frontmatter_validated,
+    rename_initiative_to_jira_key,
     update_frontmatter,
     validate,
     write_frontmatter,
@@ -299,3 +300,158 @@ class TestUpdateFrontmatter:
         write_frontmatter("review.md", VALID_REVIEW_FM.copy(), "rfe-review")
         with pytest.raises(ValidationError):
             update_frontmatter("review.md", {"recommendation": "invalid"}, "rfe-review")
+
+
+# ── Initiative schemas ───────────────────────────────────────────────────────
+
+VALID_INITIATIVE_REVIEW_FM = {
+    "initiative_id": "INIT-001",
+    "score": 7,
+    "pass": True,
+    "recommendation": "submit",
+    "feasibility": "feasible",
+    "auto_revised": False,
+    "needs_attention": False,
+    "scores": {
+        "what": 2,
+        "why": 1,
+        "scope": 2,
+        "open_to_how": 1,
+        "right_sized": 1,
+    },
+}
+
+VALID_INITIATIVE_TASK_FM = {
+    "initiative_id": "INIT-001",
+    "title": "Test Initiative",
+    "priority": "Major",
+    "status": "Ready",
+}
+
+
+class TestInitiativeSchemas:
+    def test_initiative_review_schema_exists(self):
+        assert "initiative-review" in SCHEMAS
+
+    def test_initiative_task_schema_exists(self):
+        assert "initiative-task" in SCHEMAS
+
+    def test_initiative_review_has_alignment(self):
+        assert "alignment" in SCHEMAS["initiative-review"]
+
+    def test_alignment_defaults_to_not_assessed(self):
+        """Omitting alignment must read the same as the alignment file's own value."""
+        data = {}
+        apply_defaults(data, "initiative-review")
+        assert data["alignment"] == "not_assessed"
+
+    def test_initiative_review_score_fields(self):
+        fields = SCHEMAS["initiative-review"]["scores"]["fields"]
+        assert "what" in fields
+        assert "why" in fields
+        assert "scope" in fields
+        assert "open_to_how" in fields
+        assert "right_sized" in fields
+
+    def test_initiative_task_has_initiative_id(self):
+        assert "initiative_id" in SCHEMAS["initiative-task"]
+
+    def test_initiative_task_no_size_field(self):
+        assert "size" not in SCHEMAS["initiative-task"]
+
+
+class TestInitiativeValidate:
+    def test_valid_initiative_review(self):
+        errors = validate(VALID_INITIATIVE_REVIEW_FM, "initiative-review")
+        assert errors == []
+
+    def test_valid_initiative_task(self):
+        errors = validate(VALID_INITIATIVE_TASK_FM, "initiative-task")
+        assert errors == []
+
+    def test_initiative_review_rejects_rfe_id(self):
+        data = {**VALID_INITIATIVE_REVIEW_FM, "initiative_id": "RHAIRFE-1234"}
+        errors = validate(data, "initiative-review")
+        assert any("initiative_id" in e for e in errors)
+
+    def test_initiative_task_accepts_rhoaieng_id(self):
+        data = {**VALID_INITIATIVE_TASK_FM, "initiative_id": "RHOAIENG-5000"}
+        errors = validate(data, "initiative-task")
+        assert errors == []
+
+    def test_initiative_task_parent_key(self):
+        data = {**VALID_INITIATIVE_TASK_FM, "parent_key": "RHAISTRAT-100"}
+        errors = validate(data, "initiative-task")
+        assert errors == []
+
+
+class TestInitiativeFrontmatter:
+    def test_write_and_read_initiative_review(self, tmp_dir):
+        write_frontmatter("init-review.md", VALID_INITIATIVE_REVIEW_FM.copy(), "initiative-review")
+        assert os.path.exists("init-review.md")
+        data, _ = read_frontmatter("init-review.md")
+        assert data["initiative_id"] == "INIT-001"
+        assert data["scores"]["what"] == 2
+
+    def test_write_and_read_initiative_task(self, tmp_dir):
+        write_frontmatter("init-task.md", VALID_INITIATIVE_TASK_FM.copy(), "initiative-task")
+        data, _ = read_frontmatter("init-task.md")
+        assert data["initiative_id"] == "INIT-001"
+        assert data["title"] == "Test Initiative"
+
+    def test_update_initiative_review(self, tmp_dir):
+        write_frontmatter("init-review.md", VALID_INITIATIVE_REVIEW_FM.copy(), "initiative-review")
+        update_frontmatter("init-review.md", {"auto_revised": True}, "initiative-review")
+        data, _ = read_frontmatter("init-review.md")
+        assert data["auto_revised"] is True
+        assert data["initiative_id"] == "INIT-001"
+
+
+class TestRenameInitiativeToJiraKey:
+    """Companion files must be renamed as companions, not as the task file.
+
+    Every unmatched name falls through to `{jira_key}.md` — the main task
+    file's new name — so a missed companion silently overwrites it.
+    """
+
+    def _setup(self, tmp_dir, extra_files=()):
+        os.makedirs("artifacts/initiatives")
+        os.makedirs("artifacts/initiative-reviews")
+        write_frontmatter(
+            "artifacts/initiatives/INIT-001.md",
+            VALID_INITIATIVE_TASK_FM.copy(),
+            "initiative-task",
+        )
+        for name in extra_files:
+            with open(f"artifacts/initiatives/{name}", "w") as f:
+                f.write(f"contents of {name}\n")
+
+    def test_comments_companion_keeps_its_suffix(self, tmp_dir):
+        self._setup(tmp_dir, ["INIT-001-comments.md"])
+
+        rename_initiative_to_jira_key("artifacts", "INIT-001", "RHOAIENG-1234")
+
+        assert os.path.exists("artifacts/initiatives/RHOAIENG-1234-comments.md")
+        with open("artifacts/initiatives/RHOAIENG-1234-comments.md") as f:
+            assert f.read() == "contents of INIT-001-comments.md\n"
+
+    def test_task_file_survives_companion_rename(self, tmp_dir):
+        self._setup(tmp_dir, ["INIT-001-comments.md"])
+
+        rename_initiative_to_jira_key("artifacts", "INIT-001", "RHOAIENG-1234")
+
+        data, _ = read_frontmatter("artifacts/initiatives/RHOAIENG-1234.md")
+        assert data["initiative_id"] == "RHOAIENG-1234"
+        assert data["status"] == "Submitted"
+
+    def test_removed_context_companions_still_handled(self, tmp_dir):
+        self._setup(
+            tmp_dir,
+            ["INIT-001-removed-context.yaml", "INIT-001-removed-context.md"],
+        )
+
+        rename_initiative_to_jira_key("artifacts", "INIT-001", "RHOAIENG-1234")
+
+        assert os.path.exists("artifacts/initiatives/RHOAIENG-1234-removed-context.yaml")
+        assert os.path.exists("artifacts/initiatives/RHOAIENG-1234-removed-context.md")
+        assert os.path.exists("artifacts/initiatives/RHOAIENG-1234.md")

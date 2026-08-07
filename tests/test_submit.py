@@ -780,6 +780,43 @@ class TestApprovedTransition:
         assert rc == 0, stderr
         assert "Would transition to Approved" in stdout
 
+    def test_indeterminate_feasibility_no_transition(self, art_dir):
+        """Passing review but feasibility=indeterminate → no auto-approve.
+
+        An inconclusive feasibility read is not a basis for transitioning a
+        ticket to Approved — the gate requires an explicit `feasible`.
+        """
+        _write(f"{art_dir}/rfe-tasks/RFE-001.md", TASK_FM.format(rfe_id="RFE-001"))
+        _write(
+            f"{art_dir}/rfe-reviews/RFE-001-review.md",
+            REVIEW_FM.format(rfe_id="RFE-001", auto_revised="false").replace(
+                "feasibility: feasible", "feasibility: indeterminate"
+            ),
+        )
+
+        stdout, stderr, rc = _run_submit(art_dir, ["--auto-approve"])
+        assert rc == 0, stderr
+        assert "Would transition to Approved" not in stdout
+
+    def test_needs_attention_still_transitions(self, art_dir):
+        """needs_attention does not block auto-approve — it is advisory.
+
+        The flag drives the needs-attention label; the transition gate is
+        pass + feasible only.
+        """
+        _write(f"{art_dir}/rfe-tasks/RFE-001.md", TASK_FM.format(rfe_id="RFE-001"))
+        _write(
+            f"{art_dir}/rfe-reviews/RFE-001-review.md",
+            REVIEW_FM.format(rfe_id="RFE-001", auto_revised="false").replace(
+                "needs_attention: false",
+                'needs_attention: true\nneeds_attention_reason: "Needs a human look."',
+            ),
+        )
+
+        stdout, stderr, rc = _run_submit(art_dir, ["--auto-approve"])
+        assert rc == 0, stderr
+        assert "Would transition to Approved" in stdout
+
     def test_no_flag_no_transition(self, art_dir):
         """Without --auto-approve → no transition even if review passes."""
         body = "Original.\n"

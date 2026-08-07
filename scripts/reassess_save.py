@@ -16,8 +16,21 @@ import os
 import subprocess
 import sys
 
+_TYPE_CONFIG = {
+    "rfe": {"reviews_dir": "artifacts/rfe-reviews"},
+    "initiative": {"reviews_dir": "artifacts/initiative-reviews"},
+}
+
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--type", choices=["rfe", "initiative"], default="rfe")
+    args = parser.parse_args()
+
+    reviews_dir = _TYPE_CONFIG[args.type]["reviews_dir"]
+
     ids_file = "tmp/pipeline-reassess-ids.txt"
     if not os.path.exists(ids_file):
         print("No reassess IDs file found", file=sys.stderr)
@@ -37,7 +50,7 @@ def main():
     deleted = 0
     for rfe_id in ids:
         for path in [
-            f"artifacts/rfe-reviews/{rfe_id}-review.md",
+            f"{reviews_dir}/{rfe_id}-review.md",
             f"tmp/rfe-assess/single/{rfe_id}.result.md",
         ]:
             if os.path.exists(path):

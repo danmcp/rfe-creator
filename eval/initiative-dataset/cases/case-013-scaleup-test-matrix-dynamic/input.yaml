@@ -1,0 +1,7 @@
+clarifying_context: 'Our scale-up test configurations are all hardcoded today, so every time
+  someone needs a new combination of parameters they have to go edit pipeline definitions
+  by hand. We want to make the matrix composable at runtime so teams can declare what they
+  need and the job figures out the right set of runs on its own.'
+priority: Critical
+prompt: We need the scale-up test matrix to be assembled and executed dynamically rather than
+  maintained as a static list of configurations.

@@ -12,10 +12,24 @@ from artifact_utils import read_frontmatter
 
 EXACT_FIELDS = ["pass", "recommendation", "auto_revised", "feasibility", "needs_attention"]
 TOLERANCE_FIELDS = ["score"]
-SCORE_SUB_FIELDS = ["what", "why", "open_to_how", "not_a_task", "right_sized"]
+
+_TYPE_CONFIG = {
+    "rfe": {
+        "reviews_dir": "rfe-reviews",
+        "originals_dir": "rfe-originals",
+        "tasks_dir": "rfe-tasks",
+        "score_sub_fields": ["what", "why", "open_to_how", "not_a_task", "right_sized"],
+    },
+    "initiative": {
+        "reviews_dir": "initiative-reviews",
+        "originals_dir": "initiative-originals",
+        "tasks_dir": "initiatives",
+        "score_sub_fields": ["what", "why", "scope", "open_to_how", "right_sized"],
+    },
+}
 
 
-def compare_review(rfe_id, golden_dir, new_dir, golden_review_path):
+def compare_review(rfe_id, golden_dir, new_dir, golden_review_path, tc):
     """Compare a single review. Returns (fails, warns)."""
     fails, warns = 0, 0
     rel = os.path.relpath(golden_review_path, golden_dir)
@@ -57,7 +71,7 @@ def compare_review(rfe_id, golden_dir, new_dir, golden_review_path):
     # Sub-scores
     g_scores = golden_data.get("scores", {}) or {}
     n_scores = new_data.get("scores", {}) or {}
-    for sub in SCORE_SUB_FIELDS:
+    for sub in tc["score_sub_fields"]:
         gv, nv = g_scores.get(sub), n_scores.get(sub)
         if gv is not None and nv is not None and abs(gv - nv) <= 1:
             if gv != nv:
@@ -73,17 +87,17 @@ def compare_review(rfe_id, golden_dir, new_dir, golden_review_path):
     original_name = f"{prefix}.md"
 
     missing = []
-    # Check rfe-originals
-    if os.path.exists(os.path.join(golden_dir, "rfe-originals", original_name)):
-        if not os.path.exists(os.path.join(new_dir, "rfe-originals", original_name)):
-            missing.append(f"rfe-originals/{original_name}")
-    # Check task companions
+    originals_dir = tc["originals_dir"]
+    tasks_dir = tc["tasks_dir"]
+    if os.path.exists(os.path.join(golden_dir, originals_dir, original_name)):
+        if not os.path.exists(os.path.join(new_dir, originals_dir, original_name)):
+            missing.append(f"{originals_dir}/{original_name}")
     for suffix in task_suffixes:
-        gpath = os.path.join(golden_dir, "rfe-tasks", f"{prefix}{suffix}")
+        gpath = os.path.join(golden_dir, tasks_dir, f"{prefix}{suffix}")
         if os.path.exists(gpath):
-            npath = os.path.join(new_dir, "rfe-tasks", f"{prefix}{suffix}")
+            npath = os.path.join(new_dir, tasks_dir, f"{prefix}{suffix}")
             if not os.path.exists(npath):
-                missing.append(f"rfe-tasks/{prefix}{suffix}")
+                missing.append(f"{tasks_dir}/{prefix}{suffix}")
 
     if missing:
         print(f"  FAIL: missing files: {', '.join(missing)}")
@@ -92,8 +106,8 @@ def compare_review(rfe_id, golden_dir, new_dir, golden_review_path):
         print("  OK: all files present")
 
     # Compare removed-context YAML headings
-    g_rc = os.path.join(golden_dir, "rfe-tasks", f"{prefix}-removed-context.yaml")
-    n_rc = os.path.join(new_dir, "rfe-tasks", f"{prefix}-removed-context.yaml")
+    g_rc = os.path.join(golden_dir, tasks_dir, f"{prefix}-removed-context.yaml")
+    n_rc = os.path.join(new_dir, tasks_dir, f"{prefix}-removed-context.yaml")
     if os.path.exists(g_rc):
         if not os.path.exists(n_rc):
             print("  FAIL: removed-context YAML missing")
@@ -128,9 +142,13 @@ def main():
     )
     parser.add_argument("golden_dir", help="Golden reference artifacts directory")
     parser.add_argument("new_dir", help="New output artifacts directory")
+    parser.add_argument("--type", choices=["rfe", "initiative"], default="rfe")
     args = parser.parse_args()
 
-    golden_reviews = sorted(glob.glob(os.path.join(args.golden_dir, "rfe-reviews", "*-review.md")))
+    tc = _TYPE_CONFIG[args.type]
+    golden_reviews = sorted(
+        glob.glob(os.path.join(args.golden_dir, tc["reviews_dir"], "*-review.md"))
+    )
 
     if not golden_reviews:
         print("No review files found in golden directory.", file=sys.stderr)
@@ -140,7 +158,7 @@ def main():
     for gpath in golden_reviews:
         fname = os.path.basename(gpath)
         rfe_id = fname.replace("-review.md", "")
-        f, w = compare_review(rfe_id, args.golden_dir, args.new_dir, gpath)
+        f, w = compare_review(rfe_id, args.golden_dir, args.new_dir, gpath, tc)
         total_fails += f
         total_warns += w
         total += 1

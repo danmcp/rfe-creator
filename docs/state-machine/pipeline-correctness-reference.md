@@ -214,14 +214,17 @@ The three `rfe-creator-feasibility-*` labels are mutually exclusive: at most one
 
 | State | Description | Code Location |
 |---|---|---|
-| `ASSESS_BOOTSTRAP_CHECK` | Check `RFE_SKIP_BOOTSTRAP` env var | `bootstrap-assess-rfe.sh:5` |
-| `ASSESS_CLONE_OR_PULL` | Clone or pull assess-rfe repo (graceful fallback to cached on pull failure) | `bootstrap-assess-rfe.sh:13-17` |
-| `ASSESS_VALIDATE_RUBRIC` | Validate rubric file exists | `bootstrap-assess-rfe.sh:20` |
-| `ASSESS_COPY_SKILLS` | Copy skills + patch PLUGIN_ROOT | `bootstrap-assess-rfe.sh:25-40` |
-| `ASSESS_INSTALL_AGENTS` | Install agent definitions | `bootstrap-assess-rfe.sh:42-46` |
-| `ASSESS_EXPORT_RUBRIC` | Export rubric to `artifacts/rfe-rubric.md`. Failure silently swallowed (`2>/dev/null \|\| true`); pipeline proceeds without rubric export. | `bootstrap-assess-rfe.sh:49` |
-| `ASSESS_BOOTSTRAP_DONE` | Bootstrap complete | `bootstrap-assess-rfe.sh:50` |
-| `ASSESS_BOOTSTRAP_FAILED` | Rubric missing after clone | `bootstrap-assess-rfe.sh:22` |
+| `ASSESS_PARSE_TYPE` | Parse `--type rfe\|initiative` (default `rfe`); reject unknown args/types with exit 2 | `bootstrap-assess-rfe.sh:12-37` |
+| `ASSESS_BOOTSTRAP_CHECK` | Check `RFE_SKIP_BOOTSTRAP` env var | `bootstrap-assess-rfe.sh:39` |
+| `ASSESS_CLONE_OR_PULL` | Clone or pull assess-rfe repo (graceful fallback to cached on pull failure) | `bootstrap-assess-rfe.sh:54-58` |
+| `ASSESS_VALIDATE_RUBRIC` | Validate RFE rubric file exists | `bootstrap-assess-rfe.sh:66-70` |
+| `ASSESS_VALIDATE_INITIATIVE_RUBRIC` | When `--type initiative`: validate `assess-initiative` rubric exists | `bootstrap-assess-rfe.sh:72-77` |
+| `ASSESS_COPY_SKILLS` | Copy skills + patch PLUGIN_ROOT | `bootstrap-assess-rfe.sh:79-87` |
+| `ASSESS_INSTALL_AGENTS` | Install agent definitions | `bootstrap-assess-rfe.sh:89-93` |
+| `ASSESS_VALIDATE_SCORER_AGENT` | When `--type initiative`: validate `.claude/agents/initiative-scorer.md` was installed | `bootstrap-assess-rfe.sh:95-100` |
+| `ASSESS_EXPORT_RUBRIC` | Export rubric to `artifacts/rfe-rubric.md`. Failure silently swallowed (`2>/dev/null \|\| true`); pipeline proceeds without rubric export. | `bootstrap-assess-rfe.sh:103` |
+| `ASSESS_BOOTSTRAP_DONE` | Bootstrap complete | `bootstrap-assess-rfe.sh:103` |
+| `ASSESS_BOOTSTRAP_FAILED` | Required rubric or scorer agent missing after clone | `bootstrap-assess-rfe.sh:67,72,95` |
 | `ASSESS_PREP` | Clean stale files + copy task file to `/tmp/rfe-assess/single/` | `prep_assess.py` |
 | `ASSESS_AGENT_EXEC` | Agent reads rubric + data, writes result | `rfe.review/SKILL.md` Step 2 |
 | `ASSESS_POLL` | Adaptive polling (60/30/15s intervals) | `check_review_progress.py` |

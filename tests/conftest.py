@@ -110,6 +110,16 @@ def jira(jira_emu):
     if _global_approve not in _wf:
         seed_service.WORKFLOWS["RHAIRFE Workflow"] = _wf + [_global_approve]
 
+    # Patch RHOAIENG workflow for initiative tests.
+    # RHOAIENG uses "Default Workflow" in seed data, so copy it and add
+    # the approve transition, then wire the project to the new workflow.
+    _default_wf = seed_service.WORKFLOWS.get("Default Workflow", [])
+    _iwf = list(_default_wf)
+    if _global_approve not in _iwf:
+        _iwf.append(_global_approve)
+    seed_service.WORKFLOWS["RHOAIENG Workflow"] = _iwf
+    seed_service.PROJECT_WORKFLOWS["RHOAIENG"] = "RHOAIENG Workflow"
+
     # Reset all data before each test (re-seeds with patched data)
     req = urllib.request.Request(f"{jira_emu}/api/admin/reset", method="POST", data=b"")
     urllib.request.urlopen(req)
@@ -118,13 +128,13 @@ def jira(jira_emu):
         url = jira_emu
 
         @staticmethod
-        def create(key, summary, description, labels=None, components=None):
+        def create(key, summary, description, labels=None, components=None, issue_type=None):
             """Import an issue with a specific key."""
             issue = {
                 "key": key,
                 "summary": summary,
                 "project": key.split("-")[0],
-                "issue_type": "Feature Request",
+                "issue_type": issue_type or "Feature Request",
                 "description": description,
             }
             if labels:

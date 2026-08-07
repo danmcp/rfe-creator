@@ -1,6 +1,6 @@
 # RFE Creator
 
-Claude Code skills for creating, reviewing, and submitting RFEs to the RHAIRFE Jira project.
+Claude Code skills for creating, reviewing, and submitting RFEs to the RHAIRFE Jira project and Initiatives to the RHOAIENG Jira project.
 
 Inspired by the [PRD/RFE workflow](https://github.com/ambient-code/workflows/tree/main/workflows/prd-rfe-workflow) in ambient, which established the pipeline pattern and multi-perspective review concept.
 
@@ -26,9 +26,19 @@ Inspired by the [PRD/RFE workflow](https://github.com/ambient-code/workflows/tre
 /rfe.auto-fix --jql "project = RHAIRFE AND ..."         # Batch review from JQL query
 /rfe.auto-fix RHAIRFE-1234 RHAIRFE-5678                 # Batch review explicit IDs
 
+# Initiative Pipeline
+/initiative-create     # Write a new Initiative from an engineering objective
+/initiative-review     # Review, improve, and auto-revise Initiatives
+/initiative-split      # Split an oversized Initiative into right-sized pieces
+/initiative-submit     # Submit new or update existing Initiatives in Jira
+/initiative-speedrun   # Full pipeline end-to-end with minimal interaction
+/initiative-auto-fix   # Batch review+revise+split pipeline (non-interactive)
+
 # Maintenance
 /rfe-creator.update-deps   # Force update vendored dependencies
 ```
+
+The initiative skills mirror the RFE skills. Use `RHOAIENG-*` keys for existing Jira initiatives and `INIT-*` IDs for new ones.
 
 ## Pipeline
 
@@ -77,6 +87,10 @@ Review a batch of existing Jira RFEs:
 
 Auto-fix processes in batches (default 5), handles review, revision, splitting, retry, and report generation.
 
+### Initiatives
+
+The same pipeline pattern applies to Initiatives targeting the RHOAIENG Jira project. Replace `/rfe.*` with `/initiative.*` — e.g., `/initiative-speedrun`, `/initiative-auto-fix RHOAIENG-12345`. Initiative review includes strategic alignment assessment (against RHAISTRAT Outcomes) in addition to rubric scoring and technical feasibility.
+
 ### Strategy Pipeline
 
 The strategy skills have moved to a dedicated repo: [ederign/strat-creator](https://github.com/ederign/strat-creator).
@@ -90,12 +104,15 @@ The strategy skills have moved to a dedicated repo: [ederign/strat-creator](http
 5. **Submit**: Creates new RHAIRFE tickets or updates existing ones in Jira. Supports `--dry-run` to validate without writing to Jira.
 6. **Speedrun**: End-to-end pipeline (create → auto-fix → submit). Supports `--input <yaml>` for batch creation, `--headless` for CI, `--announce-complete` for completion signaling, `--dry-run` to skip Jira writes, and `--batch-size N`.
 
+All pipeline steps apply identically to Initiatives (`/initiative.*` skills). Initiative review additionally runs a strategic alignment check against the parent RHAISTRAT Outcome when one is linked.
+
 ## Editing Between Steps
 
 All artifacts are written to `artifacts/`. You can edit any file between steps:
 
-- Edit an RFE in `artifacts/rfe-tasks/RFE-001-*.md`, then re-run `/rfe.review`
-- Re-run `/rfe.create` to start over from scratch
+- Edit an RFE in `artifacts/rfe-tasks/RFE-001.md`, then re-run `/rfe.review`
+- Edit an Initiative in `artifacts/initiatives/INIT-001.md`, then re-run `/initiative-review`
+- Re-run `/rfe.create` or `/initiative-create` to start over from scratch
 
 ## assess-rfe Integration
 

@@ -202,7 +202,10 @@ def main():
     parser.add_argument("original", nargs="?", help="Path to original file")
     parser.add_argument("task_file", nargs="?", help="Path to task file")
     parser.add_argument(
-        "--batch", action="store_true", help="Scan all originals in artifacts/rfe-originals/"
+        "--batch", action="store_true", help="Scan all originals in the originals directory"
+    )
+    parser.add_argument(
+        "--type", choices=["rfe", "initiative"], default="rfe", help="Entry type (default: rfe)"
     )
     parser.add_argument("--verbose", action="store_true", help="Show missing lines")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
@@ -213,8 +216,12 @@ def main():
     args = parser.parse_args()
 
     if args.batch:
-        originals_dir = os.path.join("artifacts", "rfe-originals")
-        tasks_dir = os.path.join("artifacts", "rfe-tasks")
+        if args.type == "initiative":
+            originals_dir = os.path.join("artifacts", "initiative-originals")
+            tasks_dir = os.path.join("artifacts", "initiatives")
+        else:
+            originals_dir = os.path.join("artifacts", "rfe-originals")
+            tasks_dir = os.path.join("artifacts", "rfe-tasks")
 
         if not os.path.isdir(originals_dir):
             print("No artifacts/rfe-originals/ directory found", file=sys.stderr)

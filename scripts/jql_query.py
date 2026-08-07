@@ -63,6 +63,12 @@ def main():
     parser = argparse.ArgumentParser(description="Execute a JQL query and return issue keys.")
     parser.add_argument("jql", help="JQL query string")
     parser.add_argument("--limit", type=int, default=None, help="Maximum number of keys to return")
+    parser.add_argument(
+        "--project",
+        choices=["rfe", "initiative"],
+        default="rfe",
+        help="Project type for label filtering (default: rfe)",
+    )
     args = parser.parse_args()
 
     server, user, token = require_env()
@@ -70,11 +76,18 @@ def main():
         print("Error: JIRA_SERVER, JIRA_USER, and JIRA_TOKEN must be set", file=sys.stderr)
         sys.exit(1)
 
-    jql = (
-        f"({args.jql}) AND statusCategory != Done"
-        " AND (labels not in (rfe-creator-ignore,"
-        " rfe-creator-autofix-rubric-pass) OR labels is EMPTY)"
-    )
+    if args.project == "initiative":
+        jql = (
+            f"({args.jql}) AND statusCategory != Done"
+            " AND (labels not in (initiative-ignore,"
+            " initiative-autofix-rubric-pass) OR labels is EMPTY)"
+        )
+    else:
+        jql = (
+            f"({args.jql}) AND statusCategory != Done"
+            " AND (labels not in (rfe-creator-ignore,"
+            " rfe-creator-autofix-rubric-pass) OR labels is EMPTY)"
+        )
     print(f"JQL={jql}", file=sys.stderr)
     search_issues(server, user, token, jql, args.limit)
 

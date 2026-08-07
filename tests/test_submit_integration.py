@@ -1277,3 +1277,217 @@ class TestApprovedTransition:
 
         issue = jira.get("RHAIRFE-1234")
         assert issue["fields"]["status"]["name"] == "New"
+
+
+# ── Initiative-specific fixtures and helpers ──────────────────────────────────
+
+
+@pytest.fixture
+def init_art_dir(tmp_path):
+    """Create a minimal artifacts directory for initiative submissions."""
+    for d in ["initiatives", "initiative-reviews", "initiative-originals"]:
+        os.makedirs(tmp_path / d)
+    orig = os.getcwd()
+    os.chdir(tmp_path)
+    yield str(tmp_path)
+    os.chdir(orig)
+
+
+def _run_initiative_submit(artifacts_dir, server_url, extra_flags=None):
+    """Run submit.py --type initiative against the jira-emulator."""
+    env = {
+        **os.environ,
+        "JIRA_SERVER": server_url,
+        "JIRA_USER": "admin",
+        "JIRA_TOKEN": "admin",
+    }
+    cmd = [sys.executable, SCRIPT, "--type", "initiative", "--artifacts-dir", artifacts_dir]
+    if extra_flags:
+        cmd.extend(extra_flags)
+    return subprocess.run(cmd, capture_output=True, text=True, env=env)
+
+
+INITIATIVE_TASK_FM = """\
+---
+initiative_id: {init_id}
+title: Test Initiative
+priority: Major
+status: Ready
+---
+
+## Engineering Objective
+
+Consolidate inference backends under a unified API.
+
+## Success Criteria
+
+- Single API surface for all backends
+"""
+
+INITIATIVE_REVIEW_FM = """\
+---
+initiative_id: {init_id}
+score: 9
+pass: true
+recommendation: submit
+feasibility: feasible
+alignment: {alignment}
+auto_revised: false
+needs_attention: false
+scores:
+  what: 2
+  why: 2
+  scope: 2
+  open_to_how: 2
+  right_sized: 1
+---
+
+## Assessor Feedback
+Looks good.
+"""
+
+
+# ── Initiative Alignment Label Tests ──────────────────────────────────────────
+
+
+class TestAlignmentLabels:
+    """Initiative-specific: alignment field maps to alignment labels."""
+
+    def test_strong_alignment_label_applied(self, init_art_dir, jira):
+        """alignment=strong → initiative-alignment-strong label."""
+        _write(
+            f"{init_art_dir}/initiatives/INIT-001.md",
+            INITIATIVE_TASK_FM.format(init_id="INIT-001"),
+        )
+        _write(
+            f"{init_art_dir}/initiative-reviews/INIT-001-review.md",
+            INITIATIVE_REVIEW_FM.format(init_id="INIT-001", alignment="strong"),
+        )
+
+        r = _run_initiative_submit(init_art_dir, jira.url)
+        assert r.returncode == 0, r.stderr
+
+        issues = jira.search("project = RHOAIENG")
+        assert len(issues) == 1
+        issue = jira.get(issues[0]["key"])
+        assert "initiative-alignment-strong" in issue["fields"]["labels"]
+        assert "initiative-alignment-partial" not in issue["fields"]["labels"]
+        assert "initiative-alignment-weak" not in issue["fields"]["labels"]
+
+    def test_partial_alignment_label_applied(self, init_art_dir, jira):
+        """alignment=partial → initiative-alignment-partial label."""
+        _write(
+            f"{init_art_dir}/initiatives/INIT-001.md",
+            INITIATIVE_TASK_FM.format(init_id="INIT-001"),
+        )
+        _write(
+            f"{init_art_dir}/initiative-reviews/INIT-001-review.md",
+            INITIATIVE_REVIEW_FM.format(init_id="INIT-001", alignment="partial"),
+        )
+
+        r = _run_initiative_submit(init_art_dir, jira.url)
+        assert r.returncode == 0, r.stderr
+
+        issues = jira.search("project = RHOAIENG")
+        assert len(issues) == 1
+        issue = jira.get(issues[0]["key"])
+        assert "initiative-alignment-partial" in issue["fields"]["labels"]
+        assert "initiative-alignment-strong" not in issue["fields"]["labels"]
+
+    def test_weak_alignment_label_applied(self, init_art_dir, jira):
+        """alignment=weak → initiative-alignment-weak label."""
+        _write(
+            f"{init_art_dir}/initiatives/INIT-001.md",
+            INITIATIVE_TASK_FM.format(init_id="INIT-001"),
+        )
+        _write(
+            f"{init_art_dir}/initiative-reviews/INIT-001-review.md",
+            INITIATIVE_REVIEW_FM.format(init_id="INIT-001", alignment="weak"),
+        )
+
+        r = _run_initiative_submit(init_art_dir, jira.url)
+        assert r.returncode == 0, r.stderr
+
+        issues = jira.search("project = RHOAIENG")
+        assert len(issues) == 1
+        issue = jira.get(issues[0]["key"])
+        assert "initiative-alignment-weak" in issue["fields"]["labels"]
+        assert "initiative-alignment-strong" not in issue["fields"]["labels"]
+
+    def test_no_alignment_no_label(self, init_art_dir, jira):
+        """No alignment field → no alignment label applied."""
+        review_no_alignment = """\
+---
+initiative_id: INIT-001
+score: 9
+pass: true
+recommendation: submit
+feasibility: feasible
+auto_revised: false
+needs_attention: false
+scores:
+  what: 2
+  why: 2
+  scope: 2
+  open_to_how: 2
+  right_sized: 1
+---
+
+## Assessor Feedback
+Looks good.
+"""
+        _write(
+            f"{init_art_dir}/initiatives/INIT-001.md",
+            INITIATIVE_TASK_FM.format(init_id="INIT-001"),
+        )
+        _write(
+            f"{init_art_dir}/initiative-reviews/INIT-001-review.md",
+            review_no_alignment,
+        )
+
+        r = _run_initiative_submit(init_art_dir, jira.url)
+        assert r.returncode == 0, r.stderr
+
+        issues = jira.search("project = RHOAIENG")
+        assert len(issues) == 1
+        issue = jira.get(issues[0]["key"])
+        labels = issue["fields"]["labels"]
+        assert not any("alignment" in label for label in labels)
+
+
+class TestLocalParentKey:
+    """A local parent id must never be sent to Jira as a parent field.
+
+    Auto-fix can split an RFE that has not been submitted yet, in which case
+    the children carry `parent_key: RFE-NNN`. That parent does not exist in
+    Jira, so forwarding it makes the create fail with a 400 and aborts submit.
+
+    The emulator silently drops an unknown parent instead of rejecting it, so
+    it cannot reproduce that 400 — the assertion that pins the fix is the
+    skip message, not the return code.
+    """
+
+    CHILD_TASK_TPL = (
+        "---\nrfe_id: RFE-{num:03d}\ntitle: Child RFE {num}\n"
+        "priority: Major\nstatus: Ready\nparent_key: RFE-001\n---\n\nChild {num} content.\n"
+    )
+
+    def test_children_of_local_parent_created_without_parent(self, art_dir, jira):
+        """Local RFE-001 parent → children created standalone, submit succeeds."""
+        _write(
+            f"{art_dir}/rfe-tasks/RFE-001.md",
+            TASK_FM.format(rfe_id="RFE-001").replace("status: Ready", "status: Archived"),
+        )
+        for num in (2, 3):
+            child_id = f"RFE-{num:03d}"
+            _write(f"{art_dir}/rfe-tasks/{child_id}.md", self.CHILD_TASK_TPL.format(num=num))
+            _write(f"{art_dir}/rfe-reviews/{child_id}-review.md", _review(child_id))
+
+        r = _run_submit(art_dir, jira.url)
+        assert r.returncode == 0, r.stderr
+
+        issues = jira.search("project = RHAIRFE")
+        assert len(issues) == 2
+        for issue in issues:
+            assert jira.get(issue["key"])["fields"].get("parent") is None
+        assert "is not in Jira" in r.stdout

@@ -32,6 +32,19 @@ Determine pipeline mode:
 
 If no arguments provided, stop with usage instructions.
 
+## Step 0.5: Bootstrap Dependencies
+
+Run bootstrap early so agent definitions (e.g. `rfe-scorer`) are installed
+in `.claude/agents/` before they're needed in Phase 2. The CREATE phase gives
+the background agent rescan time to register them.
+
+```bash
+bash scripts/bootstrap-assess-rfe.sh
+```
+
+If bootstrap fails, retry once. If the retry also fails, continue — auto-fix
+will attempt bootstrap again in its own setup step.
+
 ## Defaults
 
 When the user doesn't specify, use these defaults:
@@ -102,15 +115,15 @@ python3 scripts/state.py read tmp/speedrun-config.yaml
 python3 scripts/state.py read-ids tmp/speedrun-all-ids.txt
 ```
 
-Build the auto-fix command using flags from the config file:
+Invoke auto-fix using the **Skill** tool (NOT Agent — Agent runs in background and causes the session to terminate). Build the args from the config file:
 
 ```
-/rfe.auto-fix [--headless] [--announce-complete] --batch-size <batch_size> <all_IDs_from_file>
+Skill(skill: "rfe.auto-fix", args: "--headless --announce-complete --batch-size <batch_size> <all_IDs_from_file>")
 ```
 
 Pass `--headless` and `--announce-complete` through if set in the config. **Always** pass `--batch-size <batch_size>` using the value from `tmp/speedrun-config.yaml` — never omit it, never let auto-fix's own default take over. The speedrun default (5) was already pinned in Step 0; relying on it here is what makes runs reproducible.
 
-Auto-fix handles: assessment, feasibility checks, review, auto-revision, re-assessment, splitting oversized RFEs, retry queue, and report generation. Wait for it to complete. **Do NOT stop, summarize, or skip remaining batches early** — the pipeline must process every ID through all phases. Never emit a text-only response (no tool call) during pipeline execution — this terminates the CI process.
+Auto-fix handles: assessment, feasibility checks, review, auto-revision, re-assessment, splitting oversized RFEs, retry queue, and report generation. The Skill call blocks until auto-fix completes — this is correct. **Do NOT stop, summarize, or skip remaining batches early** — the pipeline must process every ID through all phases. Never emit a text-only response (no tool call) during pipeline execution — this terminates the CI process.
 
 **Bash discipline:** Issue exactly one operation per Bash call. Never use command substitution `$(...)` or chain commands with `;`, `&&`, or `||` — they trigger an approval prompt and are denied in headless mode. Instead, pass a value between commands by writing it to a `tmp/` file with `scripts/state.py` and reading it back in a separate call.
 
@@ -120,10 +133,10 @@ After auto-fix returns, verify all RFEs were processed:
 python3 scripts/check_autofix_complete.py
 ```
 
-If incomplete (exit code 1), the output shows `MISSING_IDS=RFE-006,RFE-007,...`. Re-invoke auto-fix with only the missing IDs:
+If incomplete (exit code 1), the output shows `MISSING_IDS=RFE-006,RFE-007,...`. Re-invoke auto-fix with the Skill tool using only the missing IDs:
 
-```text
-/rfe.auto-fix [--headless] [--batch-size N] <missing_IDs>
+```
+Skill(skill: "rfe.auto-fix", args: "--headless --batch-size <batch_size> <missing_IDs>")
 ```
 
 Repeat the verify+retry cycle until all RFEs have reviews or 3 retries have been exhausted.
@@ -152,15 +165,13 @@ Parse the `SUBMIT=` line for IDs ready to submit.
 
 If no IDs are ready to submit, skip to Phase 4.
 
-If IDs are ready:
+If IDs are ready, invoke submit using the **Skill** tool:
 
 ```
-/rfe.submit [--dry-run] [--headless] <passing_IDs>
+Skill(skill: "rfe.submit", args: "--dry-run --headless <passing_IDs>")
 ```
 
-If not headless: `/rfe.submit` will show a confirmation table before writing to Jira — this is the one mandatory interaction point.
-
-If headless: pass `--headless` so submit skips confirmation.
+Pass `--dry-run` and `--headless` through if set in the config. If not headless, `/rfe.submit` will show a confirmation table before writing to Jira — this is the one mandatory interaction point.
 
 ## Phase 4: Summary
 

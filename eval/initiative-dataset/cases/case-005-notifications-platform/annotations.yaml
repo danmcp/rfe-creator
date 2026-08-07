@@ -1,0 +1,17 @@
+difficulty: null
+expected_alignment: not_assessed
+expected_feasibility: null
+expected_pass: null
+expected_recommendation: split
+expected_scores:
+  what: null
+  why: null
+  scope: null
+  open_to_how: null
+  right_sized: 0
+expected_total: null
+known_issues:
+  - 'Bundles two independent efforts: user notifications and compliance audit logging. Should split into 2.'
+tags:
+  - new-feature
+  - split-candidate

@@ -107,6 +107,77 @@ class TestValidateEntriesFunction:
         assert "at least one" in errors[0]
 
 
+class TestInitiativeValidation:
+    def test_parent_key_accepted_for_initiative(self):
+        errors, warnings = validate_entries(
+            [{"prompt": "Improve onboarding", "parent_key": "RHAISTRAT-100"}],
+            entry_type="initiative",
+        )
+        assert errors == []
+        assert warnings == []
+
+    def test_parent_key_warning_for_rfe(self):
+        errors, warnings = validate_entries(
+            [{"prompt": "Improve onboarding", "parent_key": "RHAISTRAT-100"}],
+            entry_type="rfe",
+        )
+        assert errors == []
+        assert len(warnings) == 1
+        assert "parent_key" in warnings[0]
+
+    def test_parent_key_rhoaieng_accepted(self):
+        errors, warnings = validate_entries(
+            [{"prompt": "x", "parent_key": "RHOAIENG-5000"}],
+            entry_type="initiative",
+        )
+        assert errors == []
+
+    def test_parent_key_invalid_format(self):
+        errors, warnings = validate_entries(
+            [{"prompt": "x", "parent_key": "BAD-123"}],
+            entry_type="initiative",
+        )
+        assert len(errors) == 1
+        assert "parent_key" in errors[0]
+
+    def test_parent_key_non_string(self):
+        errors, warnings = validate_entries(
+            [{"prompt": "x", "parent_key": 123}],
+            entry_type="initiative",
+        )
+        assert len(errors) == 1
+        assert "parent_key" in errors[0]
+
+    def test_initiative_unknown_field_still_warned(self):
+        errors, warnings = validate_entries(
+            [{"prompt": "x", "team": "aipcc"}],
+            entry_type="initiative",
+        )
+        assert errors == []
+        assert len(warnings) == 1
+        assert "team" in warnings[0]
+
+
+class TestInitiativeCLI:
+    def test_type_initiative_accepts_parent_key(self, tmp_path):
+        path = str(tmp_path / "batch.yaml")
+        _write(path, "- prompt: Improve onboarding\n  parent_key: RHAISTRAT-100\n")
+        result = subprocess.run(
+            ["python3", SCRIPT, path, "--type", "initiative"], capture_output=True, text=True
+        )
+        assert result.returncode == 0
+        assert "VALID=true" in result.stdout
+
+    def test_type_rfe_warns_on_parent_key(self, tmp_path):
+        path = str(tmp_path / "batch.yaml")
+        _write(path, "- prompt: Improve onboarding\n  parent_key: RHAISTRAT-100\n")
+        result = subprocess.run(
+            ["python3", SCRIPT, path, "--strict"], capture_output=True, text=True
+        )
+        assert result.returncode == 1
+        assert "WARNING_COUNT=1" in result.stdout
+
+
 class TestCLI:
     def test_valid_file_exits_zero(self, tmp_path):
         path = str(tmp_path / "batch.yaml")

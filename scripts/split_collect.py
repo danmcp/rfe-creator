@@ -22,8 +22,24 @@ import yaml
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from artifact_utils import update_frontmatter
 
+_TYPE_CONFIG = {
+    "rfe": {"reviews_dir": "artifacts/rfe-reviews", "review_schema": "rfe-review"},
+    "initiative": {
+        "reviews_dir": "artifacts/initiative-reviews",
+        "review_schema": "initiative-review",
+    },
+}
+
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--type", choices=["rfe", "initiative"], default="rfe")
+    args = parser.parse_args()
+
+    tc = _TYPE_CONFIG[args.type]
+
     ids_file = "tmp/pipeline-split-ids.txt"
     if not os.path.exists(ids_file):
         print("No split IDs file found", file=sys.stderr)
@@ -41,10 +57,10 @@ def main():
     split_parents = []
 
     for pid in parent_ids:
-        status_path = f"artifacts/rfe-reviews/{pid}-split-status.yaml"
+        status_path = f"{tc['reviews_dir']}/{pid}-split-status.yaml"
         if not os.path.exists(status_path):
             # No split status — treat as no-split
-            _set_revise(pid)
+            _set_revise(pid, tc["reviews_dir"], tc["review_schema"])
             continue
 
         with open(status_path) as f:
@@ -52,14 +68,14 @@ def main():
 
         action = status.get("action", "no-split")
         if action == "no-split":
-            _set_revise(pid)
+            _set_revise(pid, tc["reviews_dir"], tc["review_schema"])
         else:
             split_parents.append(pid)
 
     # Collect children for all split parents at once
     if split_parents:
         result = subprocess.run(
-            ["python3", "scripts/collect_children.py"] + split_parents,
+            ["python3", "scripts/collect_children.py", "--type", args.type] + split_parents,
             capture_output=True,
             text=True,
         )
@@ -73,17 +89,17 @@ def main():
                 all_children.extend(children)
             else:
                 # Split attempted but no children found (R8a)
-                _set_revise(pid)
+                _set_revise(pid, tc["reviews_dir"], tc["review_schema"])
 
     _write_ids("tmp/pipeline-split-children-ids.txt", all_children)
     print(f"CHILDREN={len(all_children)}")
 
 
-def _set_revise(rfe_id):
+def _set_revise(rfe_id, reviews_dir="artifacts/rfe-reviews", review_schema="rfe-review"):
     """Set recommendation=revise on the review file."""
-    review_path = f"artifacts/rfe-reviews/{rfe_id}-review.md"
+    review_path = f"{reviews_dir}/{rfe_id}-review.md"
     if os.path.exists(review_path):
-        update_frontmatter(review_path, {"recommendation": "revise"}, "rfe-review")
+        update_frontmatter(review_path, {"recommendation": "revise"}, review_schema)
 
 
 def _write_ids(path, ids):

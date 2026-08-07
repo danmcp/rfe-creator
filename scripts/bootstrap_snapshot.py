@@ -33,24 +33,39 @@ import yaml
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from jira_utils import api_call_with_retry, make_request, require_env
 from snapshot_fetch import (
+    SNAPSHOT_CONFIG,
     SNAPSHOT_DIR,
     _fetch_paginated,
     compute_content_hash,
     fetch_all_issues,
 )
 
+BOOTSTRAP_CONFIG = {
+    "rfe": {
+        "report_prefix": "",
+        "item_key": "per_rfe",
+    },
+    "initiative": {
+        "report_prefix": "initiative-run-",
+        "item_key": "per_initiative",
+    },
+}
 
-def _load_run_report(results_dir, run_name):
-    """Load processed IDs and report from the run's per_rfe list.
+
+def _load_run_report(results_dir, run_name, config=None):
+    """Load processed IDs and report from the run's item list.
 
     Returns (set_of_ids, report_dict) or (None, None) if no report found.
     """
-    path = os.path.join(results_dir, run_name, "auto-fix-runs", f"{run_name}.yaml")
+    cfg = config or BOOTSTRAP_CONFIG["rfe"]
+    report_prefix = cfg["report_prefix"]
+    item_key = cfg["item_key"]
+    path = os.path.join(results_dir, run_name, "auto-fix-runs", f"{report_prefix}{run_name}.yaml")
     if not os.path.exists(path):
         return None, None
     with open(path, encoding="utf-8") as f:
         report = yaml.safe_load(f)
-    ids = {e["id"] for e in report.get("per_rfe", [])}
+    ids = {e["id"] for e in report.get(item_key, [])}
     if not ids:
         return None, None
     return ids, report
@@ -292,7 +307,16 @@ def main():
     parser.add_argument(
         "--artifacts-dir", default=None, help="Output directory (default: repo artifacts/)"
     )
+    parser.add_argument(
+        "--type",
+        choices=["rfe", "initiative"],
+        default="rfe",
+        help="Issue type (default: rfe)",
+    )
     args = parser.parse_args()
+
+    snap_config = SNAPSHOT_CONFIG[args.type]
+    boot_config = BOOTSTRAP_CONFIG[args.type]
 
     server, user, token = require_env()
     if not all([server, user, token]):
@@ -307,9 +331,10 @@ def main():
     print(f"Last run: {run_name} ({run_dt.isoformat()})", file=sys.stderr)
 
     # Step 2: Fetch all current issues with hard filters
+    ignore_label = snap_config["ignore_label"]
     jql = (
         f"({args.jql}) AND statusCategory != Done "
-        f"AND (labels not in (rfe-creator-ignore) OR labels is EMPTY)"
+        f"AND (labels not in ({ignore_label}) OR labels is EMPTY)"
     )
     print(f"JQL: {jql}", file=sys.stderr)
 
@@ -317,7 +342,7 @@ def main():
     print(f"Fetched {len(current)} issues from Jira", file=sys.stderr)
 
     # Filter to issues that were actually processed in the run
-    processed_ids, report = _load_run_report(args.results_dir, run_name)
+    processed_ids, report = _load_run_report(args.results_dir, run_name, config=boot_config)
     if processed_ids is None:
         print("Warning: no run report — including all issues", file=sys.stderr)
     else:
@@ -401,7 +426,8 @@ def main():
         "bootstrapped_from": run_name,
         "issues": snapshot_issues,
     }
-    snapshot_path = os.path.join(snapshot_dir, f"issue-snapshot-{run_name}.yaml")
+    snapshot_prefix = snap_config["snapshot_prefix"]
+    snapshot_path = os.path.join(snapshot_dir, f"{snapshot_prefix}{run_name}.yaml")
     with open(snapshot_path, "w", encoding="utf-8") as f:
         yaml.dump(snapshot, f, default_flow_style=False, sort_keys=False)
     print(f"Wrote snapshot: {snapshot_path}")

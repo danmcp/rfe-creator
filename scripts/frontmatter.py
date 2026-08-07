@@ -79,6 +79,10 @@ def _detect_schema_type(path):
         return "rfe-review"
     if "/rfe-tasks/" in path or "rfe-tasks/" in path:
         return "rfe-task"
+    if "/initiative-reviews/" in path or "initiative-reviews/" in path:
+        return "initiative-review"
+    if "/initiatives/" in path or "initiatives/" in path:
+        return "initiative-task"
     return None
 
 

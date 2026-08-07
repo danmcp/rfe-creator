@@ -1122,7 +1122,7 @@ class TestDispatchLoopE2E:
         def mock_run_script(cmd):
             if "filter_for_revision.py" in cmd:
                 return "RHAIRFE-1001 RHAIRFE-1002"  # 2 need revision
-            if "collect_recommendations.py --reassess" in cmd:
+            if "collect_recommendations.py" in cmd and "--reassess" in cmd:
                 return "REASSESS=\nDONE=RHAIRFE-1001 RHAIRFE-1002 RHAIRFE-1003"
             if "collect_recommendations.py" in cmd:
                 return (
@@ -1131,7 +1131,7 @@ class TestDispatchLoopE2E:
                 )
             if "batch_summary.py" in cmd:
                 return "submit=3 split=0 revise=0 reject=0 errors=0"
-            if "collect_recommendations.py --errors" in cmd:
+            if "collect_recommendations.py" in cmd and "--errors" in cmd:
                 return "ERRORS="
             return ""
 
@@ -1182,12 +1182,12 @@ class TestDispatchLoopE2E:
         def mock_run_script(cmd):
             if "filter_for_revision.py" in cmd:
                 return "RHAIRFE-1001"  # 1 needs revision each time
-            if "collect_recommendations.py --reassess" in cmd:
+            if "collect_recommendations.py" in cmd and "--reassess" in cmd:
                 reassess_calls["count"] += 1
                 if reassess_calls["count"] <= 2:
                     return "REASSESS=RHAIRFE-1001\nDONE=RHAIRFE-1002"
                 return "REASSESS=\nDONE=RHAIRFE-1001 RHAIRFE-1002"
-            if "collect_recommendations.py --errors" in cmd:
+            if "collect_recommendations.py" in cmd and "--errors" in cmd:
                 return "ERRORS="
             if "collect_recommendations.py" in cmd:
                 return "SUBMIT=RHAIRFE-1001 RHAIRFE-1002\nSPLIT=\nREVISE=\nREJECT=\nERRORS="
@@ -1252,9 +1252,9 @@ class TestDispatchLoopE2E:
         def mock_run_script(cmd):
             if "filter_for_revision.py" in cmd:
                 return "RHAIRFE-1001"  # 1 needs revision
-            if "collect_recommendations.py --reassess" in cmd:
+            if "collect_recommendations.py" in cmd and "--reassess" in cmd:
                 return "REASSESS=\nDONE=RHAIRFE-1001 RHAIRFE-1002"
-            if "collect_recommendations.py --errors" in cmd:
+            if "collect_recommendations.py" in cmd and "--errors" in cmd:
                 return "ERRORS="
             if "collect_recommendations.py" in cmd:
                 if current_batch["n"] == 0:
@@ -1314,9 +1314,9 @@ class TestDispatchLoopE2E:
         def mock_run_script(cmd):
             if "filter_for_revision.py" in cmd:
                 return ""  # no revisions
-            if "collect_recommendations.py --reassess" in cmd:
+            if "collect_recommendations.py" in cmd and "--reassess" in cmd:
                 return "REASSESS=\nDONE=RHAIRFE-1001"
-            if "collect_recommendations.py --errors" in cmd:
+            if "collect_recommendations.py" in cmd and "--errors" in cmd:
                 return "ERRORS="
             if "collect_recommendations.py" in cmd:
                 return "SUBMIT=RHAIRFE-1001\nSPLIT=\nREVISE=\nREJECT=\nERRORS="
@@ -1329,9 +1329,8 @@ class TestDispatchLoopE2E:
         phases = self._run_loop(monkeypatch, subprocess_mock)
 
         # Script phases that were dispatched via run-phase
-        script_phases_hit = [
-            p for p in phases if ps.PHASE_CONFIG.get(p, {}).get("type") == "script"
-        ]
+        phase_config = ps._build_phase_config("rfe")
+        script_phases_hit = [p for p in phases if phase_config.get(p, {}).get("type") == "script"]
         # Script phases with empty IDs files are skipped (no subprocess call),
         # so run_phase_calls may be fewer than script_phases_hit.
         assert len(run_phase_calls) <= len(script_phases_hit)
@@ -1354,9 +1353,9 @@ class TestDispatchLoopE2E:
         def mock_run_script(cmd):
             if "filter_for_revision.py" in cmd:
                 return "RHAIRFE-1001"
-            if "collect_recommendations.py --reassess" in cmd:
+            if "collect_recommendations.py" in cmd and "--reassess" in cmd:
                 return "REASSESS=\nDONE=RHAIRFE-1001"
-            if "collect_recommendations.py --errors" in cmd:
+            if "collect_recommendations.py" in cmd and "--errors" in cmd:
                 return "ERRORS="
             if "collect_recommendations.py" in cmd:
                 return "SUBMIT=\nSPLIT=RHAIRFE-1001\nREVISE=\nREJECT=\nERRORS="
@@ -1409,9 +1408,9 @@ class TestDispatchLoopE2E:
         def mock_run_script(cmd):
             if "filter_for_revision.py" in cmd:
                 return ""
-            if "collect_recommendations.py --reassess" in cmd:
+            if "collect_recommendations.py" in cmd and "--reassess" in cmd:
                 return "REASSESS=\nDONE=RHAIRFE-1001 RHAIRFE-1002"
-            if "collect_recommendations.py --errors" in cmd:
+            if "collect_recommendations.py" in cmd and "--errors" in cmd:
                 batch_done_calls["count"] += 1
                 if batch_done_calls["count"] == 1:
                     return "ERRORS=RHAIRFE-1002"  # error on first pass
@@ -1459,9 +1458,9 @@ class TestDispatchLoopE2E:
         def mock_run_script(cmd):
             if "filter_for_revision.py" in cmd:
                 return ""
-            if "collect_recommendations.py --reassess" in cmd:
+            if "collect_recommendations.py" in cmd and "--reassess" in cmd:
                 return "REASSESS=\nDONE=RHAIRFE-1001"
-            if "collect_recommendations.py --errors" in cmd:
+            if "collect_recommendations.py" in cmd and "--errors" in cmd:
                 return "ERRORS="
             if "collect_recommendations.py" in cmd:
                 return "SUBMIT=\nSPLIT=RHAIRFE-1001\nREVISE=\nREJECT=\nERRORS="
@@ -1505,12 +1504,12 @@ class TestDispatchLoopE2E:
         def mock_run_script(cmd):
             if "filter_for_revision.py" in cmd:
                 return "RHAIRFE-1001"
-            if "collect_recommendations.py --reassess" in cmd:
+            if "collect_recommendations.py" in cmd and "--reassess" in cmd:
                 reassess_calls["count"] += 1
                 if reassess_calls["count"] <= 2:
                     return "REASSESS=RHAIRFE-1001\nDONE="
                 return "REASSESS=\nDONE=RHAIRFE-1001"
-            if "collect_recommendations.py --errors" in cmd:
+            if "collect_recommendations.py" in cmd and "--errors" in cmd:
                 return "ERRORS="
             if "collect_recommendations.py" in cmd:
                 return "SUBMIT=RHAIRFE-1001\nSPLIT=\nREVISE=\nREJECT=\nERRORS="
@@ -1595,9 +1594,9 @@ class TestDispatchLoopE2E:
         def mock_run_script(cmd):
             if "filter_for_revision.py" in cmd:
                 return ""
-            if "collect_recommendations.py --reassess" in cmd:
+            if "collect_recommendations.py" in cmd and "--reassess" in cmd:
                 return "REASSESS=\nDONE=" + " ".join(ids)
-            if "collect_recommendations.py --errors" in cmd:
+            if "collect_recommendations.py" in cmd and "--errors" in cmd:
                 return "ERRORS="
             if "collect_recommendations.py" in cmd:
                 return "SUBMIT=" + " ".join(ids) + "\nSPLIT=\nREVISE=\nREJECT=\nERRORS="
@@ -1682,9 +1681,9 @@ class TestNextActionNoop:
         write_ids("tmp/pipeline-all-ids.txt", ["A"])
 
         def mock_run_script(cmd):
-            if "collect_recommendations.py --reassess" in cmd:
+            if "collect_recommendations.py" in cmd and "--reassess" in cmd:
                 return "REASSESS=\nDONE=A"
-            if "collect_recommendations.py --errors" in cmd:
+            if "collect_recommendations.py" in cmd and "--errors" in cmd:
                 return "ERRORS="
             if "collect_recommendations.py" in cmd:
                 return "SUBMIT=A\nSPLIT=\nREVISE=\nREJECT=\nERRORS="
@@ -1709,7 +1708,7 @@ class TestNextActionNoop:
         def mock_run_script(cmd):
             if "batch_summary.py" in cmd:
                 return "submit=1"
-            if "collect_recommendations.py --errors" in cmd:
+            if "collect_recommendations.py" in cmd and "--errors" in cmd:
                 return "ERRORS="
             return ""
 
@@ -1765,9 +1764,9 @@ class TestNextActionScript:
             f.write("FIXUP")
 
         def mock_run_script(cmd):
-            if "collect_recommendations.py --reassess" in cmd:
+            if "collect_recommendations.py" in cmd and "--reassess" in cmd:
                 return "REASSESS=\nDONE=A"
-            if "collect_recommendations.py --errors" in cmd:
+            if "collect_recommendations.py" in cmd and "--errors" in cmd:
                 return "ERRORS="
             if "collect_recommendations.py" in cmd:
                 return "SUBMIT=A\nSPLIT=\nREVISE=\nREJECT=\nERRORS="
@@ -1931,8 +1930,45 @@ class TestNextActionWaveSize:
         result = _run_next_action()
         assert result["action"] == "launch_wave"
         wave_ids = read_ids(ps.WAVE_IDS_FILE)
-        # wave_size = max(1, 4 // 2) = 2
+        # wave_size = ceil(4 / 2) = 2
         assert len(wave_ids) == 2
+
+
+class TestWaveSizeMath:
+    """batch_size is spent as an agent budget: 1 + n_parallel agents per ID.
+
+    RFE agent phases carry one parallel companion (feasibility) so the divisor
+    is 2; Initiative adds alignment, making it 3. The division rounds up so a
+    small batch does not strand a partial slot.
+    """
+
+    def _config(self, n_parallel):
+        return {"type": "agent", "parallel": [{}] * n_parallel}
+
+    def test_speedrun_batch_rounds_up_for_rfe(self):
+        """batch_size=5, divisor 2 → 3 IDs/wave, not the 2 that flooring gives."""
+        assert ps._wave_size({"batch_size": 5}, self._config(1)) == 3
+
+    def test_speedrun_batch_rounds_up_for_initiative(self):
+        """batch_size=5, divisor 3 → 2 IDs/wave, not the 1 that flooring gives."""
+        assert ps._wave_size({"batch_size": 5}, self._config(2)) == 2
+
+    def test_large_batch_is_not_capped(self):
+        """A direct auto-fix at batch_size=50 keeps full throughput."""
+        assert ps._wave_size({"batch_size": 50}, self._config(1)) == 25
+        assert ps._wave_size({"batch_size": 50}, self._config(2)) == 17
+
+    def test_no_parallel_companions_uses_whole_batch(self):
+        """Phases with no parallel agents spend the budget on IDs alone."""
+        assert ps._wave_size({"batch_size": 5}, self._config(0)) == 5
+
+    def test_never_returns_zero(self):
+        """A degenerate batch_size still launches one ID per wave."""
+        assert ps._wave_size({"batch_size": 0}, self._config(2)) == 1
+
+    def test_defaults_when_batch_size_absent(self):
+        """State written before batch_size existed falls back to 50."""
+        assert ps._wave_size({}, self._config(1)) == 25
 
 
 # ---------- wait-for-wave ----------

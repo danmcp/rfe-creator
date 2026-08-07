@@ -1,0 +1,12 @@
+clarifying_context: 'Right now everyone lands on the same static page when they log
+  in and it does not really serve anyone well. A data scientist cares about their
+  recent experiments and model metrics; an ops person wants to see cluster health
+  and deployment status. We want the landing page to act more like a personal
+  dashboard that each user can tailor -- drag widgets around, pin frequently used
+  shortcuts, hide sections they never look at. The preferences should persist across
+  sessions obviously. We could also ship sensible defaults per role so people get
+  a useful starting point without having to configure everything from scratch.'
+priority: Normal
+prompt: Let us make the homepage actually useful by letting users customize what
+  they see when they log in, with role-based defaults and the ability to rearrange
+  the layout to fit how they work.

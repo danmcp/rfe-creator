@@ -3,12 +3,14 @@
 status formatting, and adaptive sleep intervals."""
 
 import os
+import re
 import sys
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 from check_review_progress import (  # noqa: E402
+    PHASE_CHECKS,
     _check_phase,
     _detect_fast,
     _format_status,
@@ -685,3 +687,166 @@ class TestLegacyMode:
         assert code is None or code == 0
         assert "COMPLETED=1/2" in out
         assert "Re-run" not in out
+
+
+# ── Initiative phases ──
+
+
+class TestInitiativePhases:
+    def test_initiative_fetch_pending(self, tmp_path):
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-fetch": lambda id: str(tmp_path / f"{id}.md")},
+        ):
+            assert check_id("initiative-fetch", "INIT-001") == "pending"
+
+    def test_initiative_fetch_completed(self, tmp_path):
+        (tmp_path / "INIT-001.md").write_text("content")
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-fetch": lambda id: str(tmp_path / f"{id}.md")},
+        ):
+            assert check_id("initiative-fetch", "INIT-001") == "completed"
+
+    def test_initiative_review_pending(self, tmp_path):
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-review": lambda id: str(tmp_path / f"{id}-review.md")},
+        ):
+            assert check_id("initiative-review", "INIT-001") == "pending"
+
+    def test_initiative_review_completed(self, tmp_path):
+        (tmp_path / "INIT-001-review.md").write_text("---\nscore: 7\n---\nBody\n")
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-review": lambda id: str(tmp_path / f"{id}-review.md")},
+        ):
+            assert check_id("initiative-review", "INIT-001") == "completed"
+
+    def test_initiative_split_pending(self, tmp_path):
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-split": lambda id: str(tmp_path / f"{id}-split-status.yaml")},
+        ):
+            assert check_id("initiative-split", "INIT-001") == "pending"
+
+    def test_initiative_split_completed(self, tmp_path):
+        (tmp_path / "INIT-001-split-status.yaml").write_text("status: done\n")
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-split": lambda id: str(tmp_path / f"{id}-split-status.yaml")},
+        ):
+            assert check_id("initiative-split", "INIT-001") == "completed"
+
+    def test_initiative_revise_pending(self, tmp_path):
+        """Initiative-revise: review exists but not yet revised → pending."""
+        (tmp_path / "INIT-001-review.md").write_text(
+            "---\nscore: 4\nrecommendation: revise\n---\nBody\n"
+        )
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-revise": lambda id: str(tmp_path / f"{id}-review.md")},
+        ):
+            assert check_id("initiative-revise", "INIT-001") == "pending"
+
+    def test_initiative_revise_completed(self, tmp_path):
+        """Initiative-revise: auto_revised=true → completed."""
+        (tmp_path / "INIT-001-review.md").write_text(
+            "---\nauto_revised: true\nscore: 7\n---\nBody\n"
+        )
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-revise": lambda id: str(tmp_path / f"{id}-review.md")},
+        ):
+            assert check_id("initiative-revise", "INIT-001") == "completed"
+
+    def test_initiative_revise_split_completed(self, tmp_path):
+        """Initiative-revise: recommendation=split → completed (can't fix)."""
+        (tmp_path / "INIT-001-review.md").write_text("---\nrecommendation: split\n---\nBody\n")
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-revise": lambda id: str(tmp_path / f"{id}-review.md")},
+        ):
+            assert check_id("initiative-revise", "INIT-001") == "completed"
+
+    def test_initiative_revise_missing_file(self, tmp_path):
+        """Initiative-revise: no review file → pending."""
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-revise": lambda id: str(tmp_path / f"{id}-review.md")},
+        ):
+            assert check_id("initiative-revise", "INIT-001") == "pending"
+
+    def test_initiative_review_score_missing(self, tmp_path):
+        """Initiative-review: file without score → pending (not silent completed)."""
+        (tmp_path / "INIT-001-review.md").write_text("---\ntitle: test\n---\nBody\n")
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-review": lambda id: str(tmp_path / f"{id}-review.md")},
+        ):
+            assert check_id("initiative-review", "INIT-001") == "pending"
+
+    def test_check_phase_initiative_review(self, tmp_path):
+        (tmp_path / "INIT-001-review.md").write_text("---\nscore: 8\n---\nBody\n")
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"initiative-review": lambda id: str(tmp_path / f"{id}-review.md")},
+        ):
+            completed, errors, pending, total, next_poll = _check_phase(
+                "initiative-review", ["INIT-001", "INIT-002"], fast=False
+            )
+            assert completed == 1
+            assert pending == 1
+            assert total == 2
+
+
+# ── skill prose ──
+
+
+SKILLS_DIR = os.path.join(os.path.dirname(__file__), "..", ".claude", "skills")
+
+
+def _skill_text(name):
+    with open(os.path.join(SKILLS_DIR, name, "SKILL.md")) as f:
+        return f.read()
+
+
+def _phases_used(text):
+    return re.findall(r"--phase\s+([a-z-]+)", text)
+
+
+class TestSkillBarrierUsage:
+    """The barrier is prose, so nothing else in the suite exercises it.
+
+    A skill that polls a phase name PHASE_CHECKS doesn't know exits 2 forever,
+    and a forked skill that drops its barriers falls back to counting agent
+    notifications — which is not a completion signal. Both are silent.
+    """
+
+    def test_all_polled_phases_are_known(self):
+        """Every --phase in every skill resolves to a PHASE_CHECKS entry."""
+        unknown = []
+        for root, _dirs, files in os.walk(SKILLS_DIR):
+            for fn in files:
+                if not fn.endswith(".md"):
+                    continue
+                path = os.path.join(root, fn)
+                with open(path) as f:
+                    for phase in _phases_used(f.read()):
+                        if phase not in PHASE_CHECKS:
+                            unknown.append(f"{path}: {phase}")
+        assert not unknown, f"unknown poll phases: {unknown}"
+
+    def test_initiative_review_polls_as_much_as_rfe_review(self):
+        """initiative-review is a fork of rfe.review — it must not lose barriers."""
+        rfe = _skill_text("rfe.review")
+        init = _skill_text("initiative-review")
+        assert len(_phases_used(init)) >= len(_phases_used(rfe))
+        assert init.count("NEXT_POLL") >= rfe.count("NEXT_POLL")
+
+    def test_initiative_split_polls_as_much_as_rfe_split(self):
+        """Same guard for the split pair."""
+        rfe = _skill_text("rfe.split")
+        init = _skill_text("initiative-split")
+        assert len(_phases_used(init)) >= len(_phases_used(rfe))
+        assert init.count("NEXT_POLL") >= rfe.count("NEXT_POLL")

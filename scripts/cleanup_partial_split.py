@@ -12,6 +12,7 @@ from artifact_utils import (
     find_artifact_file_including_archived,
     find_review_file,
     read_frontmatter,
+    scan_initiative_task_files,
     scan_task_files,
     update_frontmatter,
 )
@@ -21,19 +22,37 @@ ARTIFACTS_DIR = os.path.join(os.getcwd(), "artifacts")
 
 def main():
     parser = argparse.ArgumentParser(description="Clean up orphan children from a failed split")
-    parser.add_argument("parent_id", help="Parent RFE ID (e.g. RHAIRFE-100)")
+    parser.add_argument("parent_id", help="Parent ID (e.g. RHAIRFE-100 or RHOAIENG-100)")
+    parser.add_argument(
+        "--type",
+        choices=["rfe", "initiative"],
+        default="rfe",
+        help="Artifact type (default: rfe)",
+    )
     args = parser.parse_args()
 
     parent_id = args.parent_id
-    tasks_dir = os.path.join(ARTIFACTS_DIR, "rfe-tasks")
-    reviews_dir = os.path.join(ARTIFACTS_DIR, "rfe-reviews")
+
+    if args.type == "initiative":
+        tasks_dir = os.path.join(ARTIFACTS_DIR, "initiatives")
+        reviews_dir = os.path.join(ARTIFACTS_DIR, "initiative-reviews")
+    else:
+        tasks_dir = os.path.join(ARTIFACTS_DIR, "rfe-tasks")
+        reviews_dir = os.path.join(ARTIFACTS_DIR, "rfe-reviews")
 
     # 1. Find and delete orphan children
     deleted = []
-    for path, data in scan_task_files(ARTIFACTS_DIR):
+    if args.type == "initiative":
+        all_tasks = scan_initiative_task_files(ARTIFACTS_DIR)
+        id_field = "initiative_id"
+    else:
+        all_tasks = scan_task_files(ARTIFACTS_DIR)
+        id_field = "rfe_id"
+
+    for path, data in all_tasks:
         if data.get("parent_key") != parent_id:
             continue
-        child_id = data["rfe_id"]
+        child_id = data[id_field]
         basename = os.path.splitext(os.path.basename(path))[0]
 
         # Delete task file
@@ -70,11 +89,17 @@ def main():
 
     # 3. Un-archive the parent
     restored = ""
-    parent_path = find_artifact_file_including_archived(ARTIFACTS_DIR, parent_id)
-    if parent_path:
+    if args.type == "initiative":
+        parent_path = os.path.join(ARTIFACTS_DIR, "initiatives", f"{parent_id}.md")
+        schema_type = "initiative-task"
+    else:
+        parent_path = find_artifact_file_including_archived(ARTIFACTS_DIR, parent_id)
+        schema_type = "rfe-task"
+
+    if parent_path and os.path.isfile(parent_path):
         fm, _ = read_frontmatter(parent_path)
         if fm.get("status") == "Archived":
-            update_frontmatter(parent_path, {"status": "Ready"}, "rfe-task")
+            update_frontmatter(parent_path, {"status": "Ready"}, schema_type)
             restored = f"{parent_id} status=Ready"
 
     print(f"DELETED={','.join(deleted)}")
