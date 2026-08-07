@@ -102,7 +102,7 @@ python3 scripts/check_review_progress.py --wait --phase create --id-file tmp/spe
 
 Call it immediately, before any agent has reported. Do not count agent-completion notifications and do not track how many agents have finished — the barrier is the only completion signal for Phase 1.
 
-Exit 0 means all N task files exist with valid frontmatter — Phase 1 is done. Exit 3 is a timeout, not a failure; it prints the still-pending IDs. Re-run the command as long as that pending list keeps shrinking. If the same IDs stay pending across 3 consecutive exit-3 results, those agents are dead and re-running will never clear them — launch a replacement Agent for each still-pending ID, then resume the barrier. You must have exactly N RFE IDs before moving on. **Never delete or re-create task files during Phase 1** — quality issues are addressed in Phase 2 (Auto-fix).
+Exit 0 means all N task files exist, each with parseable frontmatter carrying its own `rfe_id` — Phase 1 is done. Exit 3 is a timeout, not a failure; it prints the still-pending IDs. A file that is half-written, unparseable, or holding the wrong `rfe_id` counts as pending, so it times out rather than releasing the barrier. Re-run the command as long as that pending list keeps shrinking. If the same IDs stay pending across 3 consecutive exit-3 results, those agents are dead and re-running will never clear them — launch a replacement Agent for each still-pending ID, then resume the barrier. You must have exactly N RFE IDs before moving on. **Never delete or re-create task files during Phase 1** — quality issues are addressed in Phase 2 (Auto-fix).
 
 **Mode B (Existing RFE)**: Skip Phase 1. The Jira key(s) from arguments become the processing list.
 
