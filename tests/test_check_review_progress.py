@@ -203,15 +203,45 @@ class TestCreatePhase:
         ):
             assert check_id("create", "RFE-001") == "pending"
 
-    def test_unparseable_frontmatter_is_error(self, tmp_path):
-        """An error is surfaced rather than waited on — retrying won't fix it."""
+    def test_unparseable_frontmatter_is_pending(self, tmp_path):
+        """Not "error": the --wait loop stops on pending == 0 and ignores errors.
+
+        Returning "error" would release the barrier on exactly the file it
+        just rejected. Pending times out into the relaunch path instead.
+        """
         f = tmp_path / "RFE-001.md"
         f.write_text("---\n: bad yaml [[\n---\nBody\n")
         with patch.dict(
             "check_review_progress.PHASE_CHECKS",
             {"create": lambda id: str(tmp_path / f"{id}.md")},
         ):
-            assert check_id("create", "RFE-001") == "error"
+            assert check_id("create", "RFE-001") == "pending"
+
+    def test_mismatched_rfe_id_is_pending(self, tmp_path):
+        """A task file holding someone else's ID is not this ID's create output."""
+        f = tmp_path / "RFE-001.md"
+        f.write_text("---\nrfe_id: RFE-002\ntitle: A need\n---\nBody\n")
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"create": lambda id: str(tmp_path / f"{id}.md")},
+        ):
+            assert check_id("create", "RFE-001") == "pending"
+
+    def test_create_never_reports_error(self, tmp_path):
+        """No create input may return "error" — the barrier would leak past it."""
+        cases = [
+            "---\n: bad yaml [[\n---\nBody\n",
+            "---\n---\nBody\n",
+            "---\nrfe_id: RFE-002\n---\nBody\n",
+            "# No frontmatter\n",
+        ]
+        with patch.dict(
+            "check_review_progress.PHASE_CHECKS",
+            {"create": lambda id: str(tmp_path / f"{id}.md")},
+        ):
+            for content in cases:
+                (tmp_path / "RFE-001.md").write_text(content)
+                assert check_id("create", "RFE-001") != "error", content
 
 
 # ── _check_phase ──
