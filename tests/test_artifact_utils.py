@@ -69,6 +69,21 @@ CORRUPT_REVIEW = (
     "## Assessor Feedback\n\nKeep this body.\n"
 )
 
+# An empty block written before any fields are stamped, followed by a body that
+# contains a markdown horizontal rule — the shape review agents produce when they
+# write the body first. The rule is what the old regex mistook for the closing
+# delimiter, handing the score table to yaml.safe_load.
+EMPTY_BLOCK_REVIEW = (
+    "---\n"
+    "---\n"
+    "### RFE-015 Review\n\n"
+    "| Criterion | Score |\n"
+    "| --- | --- |\n"
+    "| WHAT | 2/2 |\n\n"
+    "---\n\n"
+    "## Assessor Feedback\n\nKeep this body.\n"
+)
+
 
 # ── Schema & Validation ──────────────────────────────────────────────────────
 
@@ -210,6 +225,46 @@ class TestReadFrontmatter:
         with pytest.raises(ValidationError) as exc_info:
             read_frontmatter("review.md")
         assert "\n" not in str(exc_info.value)
+
+    def test_empty_block_followed_by_horizontal_rule(self, tmp_dir):
+        """An empty block plus a later `---` must not swallow the body as YAML.
+
+        This is the crash a review agent hits when it writes the review body
+        before the frontmatter: the score table's `---` separator became the
+        closing delimiter and yaml.safe_load raised ScannerError.
+        """
+        _write("review.md", EMPTY_BLOCK_REVIEW)
+        data, body = read_frontmatter("review.md")
+        assert data == {}
+        assert "### RFE-015 Review" in body
+        assert "| WHAT | 2/2 |" in body
+        # The empty block is consumed, so a later write replaces rather than
+        # duplicates it.
+        assert not body.startswith("---")
+
+    def test_empty_block_with_no_later_rule(self, tmp_dir):
+        _write("review.md", "---\n---\nBody only.\n")
+        data, body = read_frontmatter("review.md")
+        assert data == {}
+        assert body == "Body only.\n"
+
+    def test_body_horizontal_rule_preserved(self, tmp_dir):
+        _write("test.md", "---\ntitle: Hello\n---\nIntro.\n\n---\n\nMore.\n")
+        data, body = read_frontmatter("test.md")
+        assert data["title"] == "Hello"
+        assert body == "Intro.\n\n---\n\nMore.\n"
+
+    def test_scalar_block_is_not_frontmatter(self, tmp_dir):
+        _write("test.md", "---\njust a string\n---\nBody.\n")
+        data, body = read_frontmatter("test.md")
+        assert data == {}
+        assert body.startswith("---")
+
+    def test_crlf_line_endings(self, tmp_dir):
+        _write("test.md", "---\r\ntitle: Hello\r\n---\r\nBody.\r\n")
+        data, body = read_frontmatter("test.md")
+        assert data["title"] == "Hello"
+        assert "Body." in body
 
 
 # ── read_frontmatter_validated ────────────────────────────────────────────────
@@ -397,6 +452,28 @@ class TestUpdateFrontmatterRepair:
             update_frontmatter("review.md", {"before_score": 8}, "rfe-review")
         with open("review.md") as f:
             assert f.read() == CORRUPT_REVIEW
+
+    def test_stamping_over_an_empty_block_keeps_the_whole_body(self, tmp_dir):
+        """The recovery path slices on the same regex, so it truncated too.
+
+        With the old pattern the mis-detected delimiter sat in the middle of the
+        body, and everything above it — heading, score table — was dropped
+        silently instead of crashing.
+        """
+        _write("review.md", EMPTY_BLOCK_REVIEW)
+        update_frontmatter("review.md", dict(self.STEP_4_FIELDS), "rfe-review")
+        data, body = read_frontmatter("review.md")
+        assert data["rfe_id"] == "RFE-015"
+        assert body == EMPTY_BLOCK_REVIEW.split("---\n---\n", 1)[1]
+
+    def test_stamping_over_an_empty_block_leaves_one_block(self, tmp_dir):
+        _write("review.md", EMPTY_BLOCK_REVIEW)
+        update_frontmatter("review.md", dict(self.STEP_4_FIELDS), "rfe-review")
+        with open("review.md") as f:
+            content = f.read()
+        # The body's own horizontal rule is the only `---` line left below the
+        # block, so a duplicated empty block would show up as an extra one.
+        assert content.count("\n---\n") == 2
 
 
 # ── Initiative schemas ───────────────────────────────────────────────────────

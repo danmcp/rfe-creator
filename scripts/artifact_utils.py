@@ -426,7 +426,13 @@ def get_schema_yaml(schema_type):
 
 # ─── Frontmatter Read/Write ────────────────────────────────────────────────────
 
-_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?\n)---\s*\n", re.DOTALL)
+# The closing delimiter must be anchored to the start of a line, and the block
+# body must be allowed to be empty. `(.*?\n)` requires at least one newline, so
+# on an empty block (`---\n---\n`) it consumes the closing delimiter and keeps
+# expanding to the next `---` in the body — swallowing markdown horizontal rules
+# and score tables into the YAML string. `[ \t]*` rather than `\s*` so a blank
+# line after the closing delimiter stays in the body.
+_FRONTMATTER_RE = re.compile(r"\A---[ \t]*\r?\n(.*?)^---[ \t]*\r?\n", re.DOTALL | re.MULTILINE)
 
 
 def _yaml_error_message(path, yaml_str, exc):
@@ -469,7 +475,10 @@ def read_frontmatter(path):
 
     Returns:
         (data_dict, body_string) — frontmatter as dict, remainder as string.
-        Returns ({}, full_content) if no frontmatter found.
+        Returns ({}, full_content) if no frontmatter found. An empty block
+        (`---\\n---\\n`) is valid frontmatter with no fields, so it returns
+        ({}, body) with the delimiters consumed — otherwise write_frontmatter
+        would leave a stale block sitting in the body.
 
     Raises:
         ValidationError: if the frontmatter block is present but unparseable.
@@ -488,6 +497,11 @@ def read_frontmatter(path):
         data = yaml.safe_load(yaml_str)
     except yaml.YAMLError as exc:
         raise ValidationError(_yaml_error_message(path, yaml_str, exc)) from exc
+    if data is None:
+        # An empty block is valid frontmatter with no fields. Consume the
+        # delimiters so a later write replaces the block rather than stacking a
+        # second one on top of it.
+        return {}, body
     if not isinstance(data, dict):
         return {}, content
 
