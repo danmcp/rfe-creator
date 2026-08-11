@@ -76,13 +76,9 @@ When uncertain between two verdicts, choose the more conservative one (partial o
 
 ## Step 6: Write Output
 
-Create directory if needed:
-
-```bash
-mkdir -p artifacts/initiative-reviews
-```
-
-Write `artifacts/initiative-reviews/{ID}-alignment.md`:
+Write `artifacts/initiative-reviews/{ID}-alignment.md` with the Write tool, which
+creates parent directories on its own. Do not run `mkdir` first — it is denied in
+headless runs and costs a turn per agent.
 
 ```
 ### {ID}: Strategic Alignment with {PARENT_KEY}
