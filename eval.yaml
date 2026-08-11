@@ -272,6 +272,92 @@ judges:
               errors.append(f"{fname}: feasibility=infeasible but recommendation=submit")
       return (len(errors) == 0, "; ".join(errors[:5]) if errors else f"{len(reviews)} reviews consistent")
 
+  - name: revision_flag_consistency
+    description: |
+      Verify auto_revised agrees with the evidence. The flag drives the
+      auto-revised Jira label, so a revision the flag misses is a revision no
+      reviewer is told about. Reads only shared artifacts, so the identical
+      check runs on both pipelines.
+    check: |
+      import json
+      import os
+
+      import yaml
+
+      files = outputs.get("files", {})
+      reviews = {k: v for k, v in files.items() if k.endswith("-review.md")}
+      if not reviews:
+          return (False, "No review files to check")
+      # Index by basename: the two pipelines use different directory names
+      # (rfe-tasks/rfe-originals vs initiatives/initiative-originals).
+      names = {os.path.basename(k) for k in files}
+      originals = {os.path.basename(k) for k in files if "-originals/" in k}
+      # revision_cycles per item from the shared run report
+      cycles = {}
+      for k, v in files.items():
+          if not (k.startswith("artifacts/auto-fix-runs/") and k.endswith(".yaml")):
+              continue
+          if "issue-snapshot" in k:
+              continue
+          try:
+              report = yaml.safe_load(v) or {}
+          except yaml.YAMLError:
+              continue
+          for entry in (report.get("per_rfe") or []) + (report.get("per_initiative") or []):
+              if isinstance(entry, dict) and entry.get("id"):
+                  cycles[entry["id"]] = entry.get("revision_cycles") or 0
+      errors = []
+      checked = 0
+      for fname, content in sorted(reviews.items()):
+          parts = content.split("---", 2)
+          if len(parts) < 3:
+              continue
+          try:
+              fm = yaml.safe_load(parts[1]) or {}
+          except yaml.YAMLError:
+              continue
+          item_id = fm.get("rfe_id") or fm.get("initiative_id")
+          if not item_id:
+              continue
+          checked += 1
+          flag = bool(fm.get("auto_revised"))
+          # Strong: a revision demonstrably happened and changed something.
+          strong = []
+          state = files.get(os.path.join(os.path.dirname(fname), f"{item_id}-review-state.json"))
+          if isinstance(state, str):
+              try:
+                  if (json.loads(state).get("revision_history") or "").strip():
+                      strong.append("review-state records a revision")
+              except ValueError:
+                  pass
+          before, score = fm.get("before_score"), fm.get("score")
+          if before is not None and score is not None and before != score:
+              strong.append(f"before_score {before} != score {score}")
+          before_scores = fm.get("before_scores")
+          if before_scores is not None and before_scores != fm.get("scores"):
+              strong.append("before_scores != scores")
+          if cycles.get(item_id, 0) > 0:
+              strong.append(f"run report revision_cycles={cycles[item_id]}")
+          # Weak: the revise path ran, but a revision need not move the score,
+          # so these clear the flag without being able to prove it on their own.
+          weak = list(strong)
+          if state is not None:
+              weak.append("review-state file")
+          if f"{item_id}.md" in originals:
+              weak.append("pre-revision original saved")
+          if f"{item_id}-removed-context.yaml" in names:
+              weak.append("removed-context companion")
+          if strong and not flag:
+              errors.append(f"{item_id}: auto_revised=false but revised ({'; '.join(strong)})")
+          elif flag and not weak:
+              errors.append(f"{item_id}: auto_revised=true with no trace of a revision")
+      if checked == 0:
+          return (False, "No review files to check")
+      return (
+          len(errors) == 0,
+          "; ".join(errors[:5]) if errors else f"{checked} reviews: auto_revised matches evidence",
+      )
+
   - name: pipeline_flow
     description: |
       Verify expected execution flow from stdout: all phases ran,
@@ -443,6 +529,8 @@ thresholds:
   run_report_exists:
     min_pass_rate: 1.0
   recommendation_consistency:
+    min_pass_rate: 1.0
+  revision_flag_consistency:
     min_pass_rate: 1.0
   pipeline_flow:
     min_pass_rate: 1.0
