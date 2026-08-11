@@ -26,7 +26,7 @@ Architecture review skipped — no architecture context available.
 
 ## Architecture Context Overlays
 
-Check for overlay files in `.context/architecture-context/overlays/`. If the directory exists, read all `*.md` files (excluding `README.md`) with `status: active` in their frontmatter. These are human-authored corrections to the generated architecture docs — version bumps, maturity changes, dependency shifts.
+Check for overlay files with the Glob tool: `.context/architecture-context/overlays/*.md`. Read each match except `README.md` and keep the ones with `status: active` in their frontmatter. Frontmatter sits in the first few lines, so pass `limit` to Read rather than loading whole files. Use Glob and Read for this, never a Bash glob or `for` loop — Bash is denied in headless runs, so a loop costs a turn and then falls back to Read anyway. These overlays are human-authored corrections to the generated architecture docs — version bumps, maturity changes, dependency shifts.
 
 When reviewing a strategy's architecture claims, check whether any active overlay corrects or updates the information the strategy references. If a strategy uses outdated information that an overlay corrects (e.g., references KFP SDK 2.15 when an overlay says 2.16), flag it as a finding. Overlays take precedence over the generated architecture docs when they conflict.
 
