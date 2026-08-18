@@ -71,6 +71,24 @@ def _load_run_report(results_dir, run_name, config=None):
     return ids, report
 
 
+def _run_dir_has_snapshots(results_dir, run_name):
+    """True if the run directory holds issue snapshots.
+
+    A run published by the pipeline always carries both a snapshot and a run report, so snapshots
+    without a report means the results directory is partial — most often a clone made by
+    clone_results_repo.py, whose sparse-checkout set deliberately materializes
+    `issue-snapshot-*.yaml` and not the run report. Bootstrap cannot filter against a report it
+    cannot see, and including every issue instead is not a safe default at this scale.
+    """
+    run_dir = os.path.join(results_dir, run_name, "auto-fix-runs")
+    if not os.path.isdir(run_dir):
+        return False
+    return any(
+        name.startswith("issue-snapshot-") and name.endswith(".yaml")
+        for name in os.listdir(run_dir)
+    )
+
+
 def find_latest_run_timestamp(results_dir):
     """Find the timestamp of the latest run from directory names.
 
@@ -313,6 +331,15 @@ def main():
         default="rfe",
         help="Issue type (default: rfe)",
     )
+    parser.add_argument(
+        "--include-all",
+        action="store_true",
+        help=(
+            "Proceed without the run-report filter even when the results directory looks "
+            "incomplete. Escape hatch for recovery — the snapshot will cover every fetched "
+            "issue, marked unprocessed"
+        ),
+    )
     args = parser.parse_args()
 
     snap_config = SNAPSHOT_CONFIG[args.type]
@@ -343,7 +370,17 @@ def main():
 
     # Filter to issues that were actually processed in the run
     processed_ids, report = _load_run_report(args.results_dir, run_name, config=boot_config)
-    if processed_ids is None:
+    unfiltered = processed_ids is None
+    if unfiltered:
+        if not args.include_all and _run_dir_has_snapshots(args.results_dir, run_name):
+            print(
+                f"Error: {run_name} has issue snapshots but no readable run report — "
+                f"the results directory looks partial (clone_results_repo.py omits run "
+                f"reports by design). Point --results-dir at a full clone, or pass "
+                f"--include-all to snapshot every fetched issue as unprocessed.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         print("Warning: no run report — including all issues", file=sys.stderr)
     else:
         before = len(current)
@@ -409,9 +446,26 @@ def main():
     if done_excluded:
         print(f"Excluded {done_excluded} issues (Done at run time)", file=sys.stderr)
 
+    if unfiltered:
+        # No run report, so there is no evidence any of these were processed. A bare hash would
+        # claim otherwise: snapshot_fetch.diff_snapshots reads a missing `processed` as True
+        # ("old format entries are implicitly processed"), and only a hash change ever resets it,
+        # so the issues would be excluded from selection permanently and silently. Recording them
+        # unprocessed surfaces them as NEW on the first incremental fetch, where check_resume can
+        # still skip the ones that already have a passing review.
+        snapshot_issues = {
+            key: {"hash": content_hash, "processed": False}
+            for key, content_hash in snapshot_issues.items()
+        }
+
     # Step 5: Write snapshot
     if args.dry_run:
-        print(f"\nDry run — would write snapshot with {len(snapshot_issues)} issue hashes")
+        scope = (
+            "every fetched issue, marked unprocessed (no run-report filter)"
+            if unfiltered
+            else "issues from the run report"
+        )
+        print(f"\nDry run — would write snapshot with {len(snapshot_issues)} hashes: {scope}")
         return
 
     snapshot_dir = (

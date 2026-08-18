@@ -351,7 +351,10 @@ class TestBootstrapIntegration:
         )
         assert r.returncode == 0, r.stderr
         assert "Dry run" in r.stdout
-        assert "2 issue hashes" in r.stdout
+        assert "2 hashes" in r.stdout
+        # The count alone cannot tell an operator whether the run-report filter applied, which is
+        # the difference between a correct snapshot and a silently over-inclusive one.
+        assert "issues from the run report" in r.stdout
 
         # No files written
         snapshot_dir = os.path.join(art_dir, "auto-fix-runs")
@@ -1003,6 +1006,85 @@ class TestBootstrapIntegration:
             snap = yaml.safe_load(f)
 
         assert len(snap["issues"]) == 2
+        # Fail-safe: bootstrap has no run-report evidence these were processed, so it must not
+        # write a bare hash — snapshot_fetch reads a missing `processed` as True and nothing
+        # ever demotes such an entry.
+        assert all(e == {"hash": e["hash"], "processed": False} for e in snap["issues"].values())
+
+    def test_partial_results_dir_is_refused(self, tmp_path, mock_jira):
+        """Snapshots but no run report means a partial clone — do not silently include all."""
+        url, server = mock_jira
+        server.issues = {"RHAIRFE-1": "Issue one."}
+        results = _make_results_dir(tmp_path, ["20260401-120000"], latest="20260401-120000")
+        snap_dir = os.path.join(results, "20260401-120000", "auto-fix-runs")
+        os.makedirs(snap_dir, exist_ok=True)
+        with open(os.path.join(snap_dir, "issue-snapshot-20260401-120000.yaml"), "w") as f:
+            yaml.dump({"issues": {}}, f)
+        art_dir = str(tmp_path / "artifacts")
+        os.makedirs(art_dir)
+        env = {
+            **os.environ,
+            "JIRA_SERVER": url,
+            "JIRA_USER": "test@example.com",
+            "JIRA_TOKEN": "test-token",
+        }
+        cmd = [
+            sys.executable,
+            SCRIPT,
+            "--results-dir",
+            results,
+            "--artifacts-dir",
+            art_dir,
+            "project = RHAIRFE",
+        ]
+
+        r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+
+        assert r.returncode == 1
+        assert "looks partial" in r.stderr
+        assert "--include-all" in r.stderr
+        assert not os.path.exists(os.path.join(art_dir, "auto-fix-runs"))
+
+    def test_include_all_overrides_the_refusal(self, tmp_path, mock_jira):
+        """The escape hatch must exist: bootstrap is the tool you reach for in a bad state."""
+        url, server = mock_jira
+        server.issues = {"RHAIRFE-1": "Issue one."}
+        results = _make_results_dir(tmp_path, ["20260401-120000"], latest="20260401-120000")
+        snap_dir = os.path.join(results, "20260401-120000", "auto-fix-runs")
+        os.makedirs(snap_dir, exist_ok=True)
+        with open(os.path.join(snap_dir, "issue-snapshot-20260401-120000.yaml"), "w") as f:
+            yaml.dump({"issues": {}}, f)
+        art_dir = str(tmp_path / "artifacts")
+        os.makedirs(art_dir)
+        env = {
+            **os.environ,
+            "JIRA_SERVER": url,
+            "JIRA_USER": "test@example.com",
+            "JIRA_TOKEN": "test-token",
+        }
+
+        r = subprocess.run(
+            [
+                sys.executable,
+                SCRIPT,
+                "--results-dir",
+                results,
+                "--artifacts-dir",
+                art_dir,
+                "--include-all",
+                "project = RHAIRFE",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert r.returncode == 0, r.stderr
+        snapshot_dir = os.path.join(art_dir, "auto-fix-runs")
+        snapshots = [f for f in os.listdir(snapshot_dir) if f.startswith("issue-snapshot-")]
+        with open(os.path.join(snapshot_dir, snapshots[0])) as f:
+            snap = yaml.safe_load(f)
+        assert all(e["processed"] is False for e in snap["issues"].values())
 
 
 class TestLoadRunReportConfig:
