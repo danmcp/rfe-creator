@@ -217,10 +217,9 @@ class TestGenerateDiffTokenization:
         plus_lines = [ln for ln in lines if ln.startswith("+") and not ln.startswith("+++")]
         assert len(minus_lines) >= 1
         assert len(plus_lines) >= 1
-        # No line should contain both a '-' prefix and a '+' prefix (glued)
-        for line in lines:
-            if line.startswith("-") and not line.startswith("---"):
-                assert "\n+" not in line, "Diff lines are glued together"
+        # No minus line should contain a '+' prefix (glued)
+        for line in minus_lines:
+            assert "+" not in line, "Diff lines are glued together"
 
 
 class TestGenerateDiffStderrWarnings:
@@ -255,6 +254,44 @@ class TestGenerateDiffStderrWarnings:
         assert "BIG" in captured.err
 
 
+class TestGenerateDiffMissingArtifact:
+    """Missing artifacts are expected (e.g. new RFEs) and should not warn."""
+
+    def test_missing_original_no_warning(self, tmp_path, capsys):
+        originals = tmp_path / "originals"
+        tasks = tmp_path / "tasks"
+        originals.mkdir()
+        tasks.mkdir()
+        (tasks / "RFE-001.md").write_text("new content\n")
+        result = generate_diff("RFE-001", str(tasks), str(originals))
+        assert result is None
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_missing_revised_no_warning(self, tmp_path, capsys):
+        originals = tmp_path / "originals"
+        tasks = tmp_path / "tasks"
+        originals.mkdir()
+        tasks.mkdir()
+        (originals / "RFE-001.md").write_text("original content\n")
+        result = generate_diff("RFE-001", str(tasks), str(originals))
+        assert result is None
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_dangling_symlink_still_warns(self, tmp_path, capsys):
+        originals = tmp_path / "originals"
+        tasks = tmp_path / "tasks"
+        originals.mkdir()
+        tasks.mkdir()
+        (originals / "RFE-001.md").symlink_to(tmp_path / "nonexistent")
+        (tasks / "RFE-001.md").write_text("content\n")
+        result = generate_diff("RFE-001", str(tasks), str(originals))
+        assert result is None
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+
+
 class TestOpenNofollowEncoding:
     """Verify os.fdopen uses UTF-8 encoding with error replacement."""
 
@@ -279,3 +316,4 @@ class TestOpenNofollowEncoding:
         # Should not raise, replacement char should appear
         assert "hello" in content
         assert "world" in content
+        assert "�" in content

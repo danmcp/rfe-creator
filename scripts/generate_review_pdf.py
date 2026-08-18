@@ -214,6 +214,9 @@ def generate_diff(rfe_id, tasks_dir, originals_dir):
             )
         return None
 
+    if not os.path.lexists(orig) or not os.path.lexists(revised):
+        return None
+
     orig_f = _open_nofollow(orig, MAX_DIFF_FILE_SIZE)
     if orig_f is None:
         print(
