@@ -169,6 +169,97 @@ def _find_review(artifacts_dir, item_id, cfg):
     return path if os.path.isfile(path) else None
 
 
+def _generate_reports(args):
+    """Regenerate the run report YAML and its HTML companion."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    ts = args.report_timestamp
+    run_id = _parse_run_id(ts)
+
+    print("\nGenerating reports...")
+
+    yaml_cmd = [
+        sys.executable,
+        os.path.join(script_dir, "generate_run_report.py"),
+        "--start-time",
+        ts,
+        "--artifacts-dir",
+        args.artifacts_dir,
+    ]
+    if args.type == "initiative":
+        yaml_cmd.extend(["--type", "initiative"])
+    result = subprocess.run(yaml_cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"  YAML report: {result.stdout.strip()}")
+    else:
+        print(f"Warning: YAML report generation failed: {result.stderr}", file=sys.stderr)
+
+    html_output = report_companion_path(args.artifacts_dir, run_id, args.type, "-report.html")
+    html_cmd = [
+        sys.executable,
+        os.path.join(script_dir, "generate_review_pdf.py"),
+        "--revised-only",
+        "--artifacts-dir",
+        args.artifacts_dir,
+        "--output",
+        html_output,
+    ]
+    if args.type == "initiative":
+        html_cmd.extend(["--type", "initiative"])
+    result = subprocess.run(html_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"Warning: HTML report generation failed: {result.stderr}", file=sys.stderr)
+
+
+def _record_split_failure(server, user, token, parent_key, reason, error, args, cfg, parent_data):
+    """Record a split that did not complete: review frontmatter, then Jira comment and label.
+
+    The Jira half is best-effort on purpose. The point of recording is to survive a failure, and
+    under the failures most worth recording — an expired token, an unreachable instance — these
+    same calls raise. An unguarded write here would replace the diagnosis with a traceback.
+    """
+    review_path = _find_review(args.artifacts_dir, parent_key, cfg)
+    if review_path:
+        update_frontmatter(
+            review_path,
+            {"error": error, "needs_attention": True, "needs_attention_reason": reason},
+            cfg["review_schema"],
+        )
+
+    entry = {
+        cfg["id_field"]: parent_key,
+        "attn_reason": reason,
+        "original_labels": parent_data.get("original_labels") or [],
+    }
+    try:
+        _post_needs_attention_comment(
+            server, user, token, entry, {parent_key: parent_key}, args.dry_run, cfg
+        )
+        if not args.dry_run:
+            add_labels(server, user, token, parent_key, [f"{cfg['label_prefix']}-needs-attention"])
+    except Exception as e:
+        print(
+            f"  Warning: could not flag {parent_key} in Jira ({e}). Recorded locally.",
+            file=sys.stderr,
+        )
+
+
+def _finish(args, type_label, submit_errors):
+    """Summarise failures, regenerate the reports, then exit. Never returns.
+
+    Every terminating path routes through here. A path that skipped it took the run report with
+    it, so successes already committed to Jira ended up recorded nowhere at all.
+    """
+    if submit_errors:
+        print(f"\n{len(submit_errors)} {type_label}(s) failed during submit:", file=sys.stderr)
+        for eid, emsg in submit_errors:
+            print(f"  {eid}: {emsg}", file=sys.stderr)
+
+    if args.generate_report:
+        _generate_reports(args)
+
+    sys.exit(1 if submit_errors else 0)
+
+
 def report_companion_path(artifacts_dir, run_id, work_type, suffix):
     """Path for a run report companion file, beside the YAML it belongs to.
 
@@ -293,6 +384,10 @@ def main():
             pk = _parent_of.get(pk)
         return False
 
+    # Hoisted above the split loop: both loops record into it, and every exit
+    # path reports it.
+    submit_errors = []
+
     if split_parents:
         print(f"Phase 1: Submitting {len(split_parents)} split parent(s)\n")
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -312,81 +407,69 @@ def main():
                 cmd.append("--dry-run")
             print(f"--- {parent_key} ---")
             result = subprocess.run(cmd)
+            # NB: argparse also exits 2, so a malformed argv above would be misread as the
+            # leaf cap and skipped rather than failing loudly.
             if result.returncode == 2:
                 print(f"  {parent_key}: Split refused — too many children")
-                review_path = _find_review(args.artifacts_dir, parent_key, cfg)
-                attn_reason = (
+                _record_split_failure(
+                    server,
+                    user,
+                    token,
+                    parent_key,
                     f"Automatic splitting produced too many child {type_label}s. "
                     "The decomposition needs human review to determine "
-                    "the right granularity."
+                    "the right granularity.",
+                    "split_refused: too many leaf children",
+                    args,
+                    cfg,
+                    split_parent_data[parent_key],
                 )
-                if review_path:
-                    update_frontmatter(
-                        review_path,
-                        {
-                            "error": "split_refused: too many leaf children",
-                            "needs_attention": True,
-                            "needs_attention_reason": attn_reason,
-                        },
-                        cfg["review_schema"],
-                    )
-
-                parent_labels = split_parent_data[parent_key].get("original_labels") or []
-                refusal_entry = {
-                    id_field: parent_key,
-                    "attn_reason": attn_reason,
-                    "original_labels": parent_labels,
-                }
-                refusal_results = {parent_key: parent_key}
-                _post_needs_attention_comment(
-                    server, user, token, refusal_entry, refusal_results, args.dry_run, cfg
-                )
-
-                if not args.dry_run:
-                    needs_attn_label = f"{cfg['label_prefix']}-needs-attention"
-                    add_labels(server, user, token, parent_key, [needs_attn_label])
                 continue
             elif result.returncode == 3:
                 print(f"  {parent_key}: Split refused — Jira conflict")
-                review_path = _find_review(args.artifacts_dir, parent_key, cfg)
-                attn_reason = (
+                _record_split_failure(
+                    server,
+                    user,
+                    token,
+                    parent_key,
                     f"Parent {type_label} description was modified in Jira since "
                     "fetch. Split submission skipped to avoid "
-                    "overwriting human edits."
+                    "overwriting human edits.",
+                    "split_refused: jira conflict",
+                    args,
+                    cfg,
+                    split_parent_data[parent_key],
                 )
-                if review_path:
-                    update_frontmatter(
-                        review_path,
-                        {
-                            "error": "split_refused: jira conflict",
-                            "needs_attention": True,
-                            "needs_attention_reason": attn_reason,
-                        },
-                        cfg["review_schema"],
-                    )
-
-                parent_labels = split_parent_data[parent_key].get("original_labels") or []
-                refusal_entry = {
-                    id_field: parent_key,
-                    "attn_reason": attn_reason,
-                    "original_labels": parent_labels,
-                }
-                refusal_results = {parent_key: parent_key}
-                _post_needs_attention_comment(
-                    server, user, token, refusal_entry, refusal_results, args.dry_run, cfg
-                )
-
-                if not args.dry_run:
-                    needs_attn_label = f"{cfg['label_prefix']}-needs-attention"
-                    add_labels(server, user, token, parent_key, [needs_attn_label])
                 continue
             elif result.returncode != 0:
+                # Unlike the refusals above, this one may be PARTIALLY APPLIED — split_submit
+                # writes to Jira across three phases, so children and links may already exist.
+                # Still an abort: continuing past an unclassified failure needs the systemic-vs-
+                # per-parent distinction the exit codes cannot currently express. But the report
+                # is written first, because the parents that succeeded earlier in this loop are
+                # real in Jira and this is the only place they are recorded.
                 print(
                     f"Error: split_submit.py failed for {parent_key} "
                     f"(exit code {result.returncode})",
                     file=sys.stderr,
                 )
-                sys.exit(result.returncode)
+                _record_split_failure(
+                    server,
+                    user,
+                    token,
+                    parent_key,
+                    f"Split submission failed partway (exit {result.returncode}). Jira may be "
+                    f"partially updated — check {parent_key} for child {type_label}s that were "
+                    "already created, and for unlinked children, before retrying.",
+                    f"split_submit_failed: exit {result.returncode}",
+                    args,
+                    cfg,
+                    split_parent_data[parent_key],
+                )
+                submit_errors.append(
+                    (parent_key, f"split_submit exit {result.returncode} (may be partial)")
+                )
+                _finish(args, type_label, submit_errors)
             print()
 
     # Record split-child hashes in the snapshot
@@ -444,7 +527,9 @@ def main():
                 print(f"Done. Index rebuilt at {args.artifacts_dir}/rfes.md")
             else:
                 print(f"Done. {len(split_parents)} split(s) processed.")
-            return
+            # A split-only batch reaches here on the happy path too, so returning early meant a
+            # run whose every input was a split never produced a report at all.
+            _finish(args, type_label, submit_errors)
         print(f"Error: No submittable {type_label}s found.", file=sys.stderr)
         sys.exit(1)
 
@@ -693,7 +778,6 @@ def main():
     # Execute
     results = {}
     submitted_hashes = {}
-    submit_errors = []
     mark_processed_ids = []
     for entry in plan:
         item_id = entry[id_field]
@@ -888,48 +972,7 @@ def main():
         for eid, emsg in submit_errors:
             print(f"  {eid}: {emsg}", file=sys.stderr)
 
-    # Generate reports if requested
-    if args.generate_report:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        ts = args.report_timestamp
-        run_id = _parse_run_id(ts)
-
-        print("\nGenerating reports...")
-
-        yaml_cmd = [
-            sys.executable,
-            os.path.join(script_dir, "generate_run_report.py"),
-            "--start-time",
-            ts,
-            "--artifacts-dir",
-            args.artifacts_dir,
-        ]
-        if args.type == "initiative":
-            yaml_cmd.extend(["--type", "initiative"])
-        result = subprocess.run(yaml_cmd, capture_output=True, text=True)
-        if result.returncode == 0:
-            print(f"  YAML report: {result.stdout.strip()}")
-        else:
-            print(f"Warning: YAML report generation failed: {result.stderr}", file=sys.stderr)
-
-        html_output = report_companion_path(args.artifacts_dir, run_id, args.type, "-report.html")
-        html_cmd = [
-            sys.executable,
-            os.path.join(script_dir, "generate_review_pdf.py"),
-            "--revised-only",
-            "--artifacts-dir",
-            args.artifacts_dir,
-            "--output",
-            html_output,
-        ]
-        if args.type == "initiative":
-            html_cmd.extend(["--type", "initiative"])
-        result = subprocess.run(html_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"Warning: HTML report generation failed: {result.stderr}", file=sys.stderr)
-
-    if submit_errors:
-        sys.exit(1)
+    _finish(args, type_label, submit_errors)
 
 
 if __name__ == "__main__":

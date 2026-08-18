@@ -834,3 +834,131 @@ class TestApprovedTransition:
         stdout, stderr, rc = _run_submit(art_dir)
         assert rc == 0, stderr
         assert "Would transition to Approved" not in stdout
+
+
+class TestSplitFailureIsRecorded:
+    """A split that crashes must not take the run report down with it.
+
+    split_submit writes to Jira across three phases, so by the time an unclassified failure
+    surfaces, earlier parents in the same loop may already be fully split in Jira. Aborting before
+    the report was regenerated left those successes recorded nowhere — observed 2026-07-21/22,
+    where 11 of 18 parents were genuinely split and the job logged "No changes to commit".
+    """
+
+    PARENT_TASK = (
+        "---\nrfe_id: RHAIRFE-1000\ntitle: Parent RFE\n"
+        "priority: Major\nstatus: Archived\n---\n\nParent content.\n"
+    )
+    CHILD_TASK = (
+        "---\nrfe_id: RFE-001\ntitle: Child RFE\n"
+        "priority: Major\nstatus: Ready\nparent_key: RHAIRFE-1000\n---\n\nChild content.\n"
+    )
+    REVIEW_TPL = (
+        "---\nrfe_id: {rid}\nscore: 9\npass: true\n"
+        "recommendation: submit\nfeasibility: feasible\n"
+        "auto_revised: false\nneeds_attention: false\n"
+        "scores:\n  what: 2\n  why: 2\n  open_to_how: 2\n"
+        "  not_a_task: 2\n  right_sized: 1\n---\n\nLooks good.\n"
+    )
+
+    def _split_only_batch(self, art_dir):
+        _write(f"{art_dir}/rfe-tasks/RHAIRFE-1000.md", self.PARENT_TASK)
+        _write(
+            f"{art_dir}/rfe-reviews/RHAIRFE-1000-review.md",
+            self.REVIEW_TPL.format(rid="RHAIRFE-1000"),
+        )
+        _write(f"{art_dir}/rfe-tasks/RFE-001.md", self.CHILD_TASK)
+        _write(f"{art_dir}/rfe-reviews/RFE-001-review.md", self.REVIEW_TPL.format(rid="RFE-001"))
+
+    def _report_paths(self, art_dir, ts="20260818-120000"):
+        return (
+            f"{art_dir}/auto-fix-runs/{ts}.yaml",
+            f"{art_dir}/auto-fix-runs/{ts}-report.html",
+        )
+
+    def test_split_only_batch_still_writes_a_report(self, art_dir):
+        """The early return used to skip report generation entirely on this shape.
+
+        Uses the leaf-cap refusal to reach it: exit 2 is decided before split_submit makes any
+        Jira call, so this exercises the split-only path without a live instance. Afterwards
+        nothing is regular-submittable (the children all have a Jira ancestor), which is exactly
+        the branch that used to `return` before the report block.
+        """
+        _write(f"{art_dir}/rfe-tasks/RHAIRFE-1000.md", self.PARENT_TASK)
+        _write(
+            f"{art_dir}/rfe-reviews/RHAIRFE-1000-review.md",
+            self.REVIEW_TPL.format(rid="RHAIRFE-1000"),
+        )
+        for i in range(1, 8):  # 7 leaves > MAX_LEAF_CHILDREN
+            _write(
+                f"{art_dir}/rfe-tasks/RFE-{i:03d}.md",
+                "---\nrfe_id: RFE-%03d\ntitle: Child %d\npriority: Major\n"
+                "status: Ready\nparent_key: RHAIRFE-1000\n---\n\nChild.\n" % (i, i),
+            )
+        yaml_path, _ = self._report_paths(art_dir)
+
+        stdout, stderr, rc = _run_submit(
+            art_dir, ["--generate-report", "--report-timestamp", "20260818-120000"]
+        )
+
+        assert rc == 0, stdout + stderr
+        assert "Split refused" in stdout
+        assert os.path.exists(yaml_path), (
+            "a batch whose every input was a split produced no run report"
+        )
+
+    def test_generic_failure_records_and_still_reports(self, art_dir, monkeypatch, tmp_path):
+        """Exit code 1 from split_submit: record it, write the report, then exit 1."""
+        self._split_only_batch(art_dir)
+        yaml_path, _ = self._report_paths(art_dir)
+
+        # Stand in for split_submit.py with something that fails the way a Jira 404 does.
+        stub = tmp_path / "split_submit.py"
+        stub.write_text("import sys\nsys.stderr.write('boom\\n')\nsys.exit(1)\n")
+        scripts_copy = tmp_path / "scripts"
+        scripts_copy.mkdir()
+        for name in os.listdir(os.path.dirname(SCRIPT)):
+            if name.endswith(".py") and name != "split_submit.py":
+                src = os.path.join(os.path.dirname(SCRIPT), name)
+                if os.path.isfile(src):
+                    with open(src) as f:
+                        (scripts_copy / name).write_text(f.read())
+        (scripts_copy / "split_submit.py").write_text(stub.read_text())
+
+        env = {
+            **os.environ,
+            "JIRA_SERVER": "https://fake.atlassian.net",
+            "JIRA_USER": "fake@example.com",
+            "JIRA_TOKEN": "fake-token",
+        }
+        result = subprocess.run(
+            [
+                "python3",
+                str(scripts_copy / "submit.py"),
+                "--dry-run",
+                "--artifacts-dir",
+                art_dir,
+                "--generate-report",
+                "--report-timestamp",
+                "20260818-120000",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Traceback" not in result.stderr, result.stderr
+
+        import yaml
+
+        with open(f"{art_dir}/rfe-reviews/RHAIRFE-1000-review.md") as f:
+            content = f.read()
+        fm = yaml.safe_load(content[3 : content.index("---", 3)])
+        assert fm["error"] == "split_submit_failed: exit 1"
+        assert fm["needs_attention"] is True
+        assert "partially updated" in fm["needs_attention_reason"]
+
+        assert os.path.exists(yaml_path), (
+            "the failure took the run report with it — the successes before it are unrecorded"
+        )
