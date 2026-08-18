@@ -38,6 +38,7 @@ from artifact_utils import (  # noqa: E402
     scan_task_files,
     update_frontmatter,
 )
+from generate_run_report import TYPE_CONFIG as REPORT_TYPE_CONFIG  # noqa: E402
 from generate_run_report import _parse_run_id  # noqa: E402
 from jira_utils import (  # noqa: E402
     add_comment,
@@ -166,6 +167,17 @@ def _find_review(artifacts_dir, item_id, cfg):
     """Find review file path for an item, or None."""
     path = os.path.join(artifacts_dir, cfg["reviews_dir"], f"{item_id}-review.md")
     return path if os.path.isfile(path) else None
+
+
+def report_companion_path(artifacts_dir, run_id, work_type, suffix):
+    """Path for a run report companion file, beside the YAML it belongs to.
+
+    generate_run_report owns the report filename, prefix included. Re-deriving that prefix here
+    would be a second copy of a per-type constant, so the companion resolves it from the same
+    config the writer uses.
+    """
+    prefix = REPORT_TYPE_CONFIG[work_type]["output_prefix"]
+    return os.path.join(artifacts_dir, "auto-fix-runs", f"{prefix}{run_id}{suffix}")
 
 
 def _post_needs_attention_comment(server, user, token, entry, results, dry_run, cfg):
@@ -900,10 +912,7 @@ def main():
         else:
             print(f"Warning: YAML report generation failed: {result.stderr}", file=sys.stderr)
 
-        report_prefix = "initiative-run-" if args.type == "initiative" else ""
-        html_output = os.path.join(
-            args.artifacts_dir, "auto-fix-runs", f"{report_prefix}{run_id}-report.html"
-        )
+        html_output = report_companion_path(args.artifacts_dir, run_id, args.type, "-report.html")
         html_cmd = [
             sys.executable,
             os.path.join(script_dir, "generate_review_pdf.py"),

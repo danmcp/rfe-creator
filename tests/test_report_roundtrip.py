@@ -137,6 +137,30 @@ class TestWriterReaderAgree:
         )
         assert report is not None
 
+    @pytest.mark.parametrize("work_type", sorted(FIXTURES))
+    def test_html_companion_lands_beside_the_yaml(self, tmp_path, work_type):
+        """submit.py builds the HTML companion path itself, outside the round-trip above.
+
+        Compares against the filename the writer actually produced rather than against the
+        config both sides read — comparing the config to itself would pass no matter what
+        submit.py does with it.
+        """
+        import submit
+
+        artifacts = tmp_path / f"artifacts-{work_type}"
+        results_dir = str(tmp_path / "results")
+        _write_report(tmp_path, work_type, results_dir)
+        written = [n for n in os.listdir(artifacts / "auto-fix-runs") if n.endswith(".yaml")]
+        assert len(written) == 1, written
+
+        html = submit.report_companion_path(str(artifacts), RUN, work_type, "-report.html")
+
+        assert os.path.dirname(html) == str(artifacts / "auto-fix-runs")
+        assert os.path.basename(html) == written[0].replace(".yaml", "-report.html"), (
+            f"{work_type}: the HTML companion would not land beside the YAML the writer produced. "
+            f"submit.py must resolve the prefix from TYPE_CONFIG, not re-derive it."
+        )
+
     def test_reader_does_not_cross_wire_types(self, tmp_path):
         """An initiative bootstrap must not resolve ids out of an rfe-only run directory.
 
