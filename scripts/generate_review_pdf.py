@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Generate an HTML review report from review artifacts."""
 
+import difflib
+import io
 import os
 import re
-import subprocess
+import stat
 import sys
 from collections import Counter
 
@@ -137,31 +139,112 @@ def read_removed_context(rfe_id, tasks_dir):
         return yaml.safe_load(f)
 
 
-def generate_diff(rfe_id, tasks_dir, originals_dir):
-    """Generate unified diff between original and revised content."""
-    orig = os.path.join(originals_dir, f"{rfe_id}.md")
-    revised = os.path.join(tasks_dir, f"{rfe_id}.md")
-    if not os.path.exists(orig) or not os.path.exists(revised):
+MAX_DIFF_FILE_SIZE = 2 * 1024 * 1024  # 2 MiB
+
+
+def _safe_artifact_path(base_dir, filename):
+    """Resolve *filename* under *base_dir*, rejecting symlinks and traversal."""
+    candidate = os.path.join(base_dir, filename)
+    real = os.path.realpath(candidate)
+    real_base = os.path.realpath(base_dir)
+    if not real.startswith(real_base + os.sep) and real != real_base:
+        return None
+    if os.path.islink(candidate):
+        return None
+    return real
+
+
+def _strip_frontmatter(text):
+    """Remove YAML frontmatter delimited by lines that are exactly '---'."""
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].rstrip("\r\n") != "---":
+        return text
+    end = next(
+        (i for i, line in enumerate(lines[1:], 1) if line.rstrip("\r\n") == "---"),
+        None,
+    )
+    if end is None:
+        return text
+    return "".join(lines[end + 1 :])
+
+
+def _open_nofollow(path, max_size):
+    """Open a regular file via O_NOFOLLOW and enforce *max_size* on the fd."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > max_size:
+            os.close(fd)
+            return None
+        return os.fdopen(fd, "r", encoding="utf-8", errors="replace")
+    except OSError:
+        os.close(fd)
         return None
 
-    with open(revised) as f:
-        revised_content = f.read()
-    if revised_content.startswith("---"):
-        parts = revised_content.split("---", 2)
-        if len(parts) >= 3:
-            revised_content = parts[2].lstrip("\n")
 
-    import tempfile
+def _ensure_trailing_newline(lines):
+    """Ensure the last line ends with a newline to avoid glued diff output."""
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    return lines
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as tmp:
-        tmp.write(revised_content)
-        tmp_path = tmp.name
 
-    try:
-        result = subprocess.run(["diff", "-u", orig, tmp_path], capture_output=True, text=True)
-        return result.stdout
-    finally:
-        os.unlink(tmp_path)
+def generate_diff(rfe_id, tasks_dir, originals_dir):
+    """Generate unified diff between original and revised RFE."""
+    orig = _safe_artifact_path(originals_dir, f"{rfe_id}.md")
+    revised = _safe_artifact_path(tasks_dir, f"{rfe_id}.md")
+    if not orig or not revised:
+        if not orig and not revised:
+            print(
+                f"WARNING: {rfe_id}: diff suppressed — both original and revised paths rejected by policy",
+                file=sys.stderr,
+            )
+        elif not orig:
+            print(
+                f"WARNING: {rfe_id}: diff suppressed — original path rejected by policy",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"WARNING: {rfe_id}: diff suppressed — revised path rejected by policy",
+                file=sys.stderr,
+            )
+        return None
+
+    if not os.path.lexists(orig) or not os.path.lexists(revised):
+        return None
+
+    orig_f = _open_nofollow(orig, MAX_DIFF_FILE_SIZE)
+    if orig_f is None:
+        print(
+            f"WARNING: {rfe_id}: diff suppressed — original file rejected (symlink or exceeds {MAX_DIFF_FILE_SIZE} bytes)",
+            file=sys.stderr,
+        )
+        return None
+    with orig_f:
+        orig_lines = orig_f.readlines()
+
+    revised_f = _open_nofollow(revised, MAX_DIFF_FILE_SIZE)
+    if revised_f is None:
+        print(
+            f"WARNING: {rfe_id}: diff suppressed — revised file rejected (symlink or exceeds {MAX_DIFF_FILE_SIZE} bytes)",
+            file=sys.stderr,
+        )
+        return None
+    with revised_f:
+        revised_content = revised_f.read()
+
+    revised_content = _strip_frontmatter(revised_content)
+    revised_lines = io.StringIO(revised_content).readlines()
+
+    orig_lines = _ensure_trailing_newline(orig_lines)
+    revised_lines = _ensure_trailing_newline(revised_lines)
+
+    diff = difflib.unified_diff(orig_lines, revised_lines, fromfile=orig, tofile=revised)
+    return "".join(diff)
 
 
 def html_escape(text):
