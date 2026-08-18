@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 from generate_review_pdf import (
     MAX_DIFF_FILE_SIZE,
+    _ensure_trailing_newline,
     _open_nofollow,
     _safe_artifact_path,
     _strip_frontmatter,
@@ -162,3 +163,119 @@ class TestGenerateDiffSymlinkRejection:
         (originals / "RFE-001.md").write_text("original\n")
         (tasks / "RFE-001.md").symlink_to(secret)
         assert generate_diff("RFE-001", str(tasks), str(originals)) is None
+
+
+class TestEnsureTrailingNewline:
+    def test_adds_newline_when_missing(self):
+        lines = ["hello"]
+        result = _ensure_trailing_newline(lines)
+        assert result == ["hello\n"]
+
+    def test_preserves_existing_newline(self):
+        lines = ["hello\n"]
+        result = _ensure_trailing_newline(lines)
+        assert result == ["hello\n"]
+
+    def test_empty_list(self):
+        assert _ensure_trailing_newline([]) == []
+
+    def test_multiple_lines_only_fixes_last(self):
+        lines = ["first\n", "second"]
+        result = _ensure_trailing_newline(lines)
+        assert result == ["first\n", "second\n"]
+
+
+class TestGenerateDiffTokenization:
+    """Verify both sides use identical tokenization (readlines, not splitlines)."""
+
+    def test_u2028_no_spurious_diff(self, tmp_path):
+        """Identical files with U+2028 should produce no diff."""
+        originals = tmp_path / "originals"
+        tasks = tmp_path / "tasks"
+        originals.mkdir()
+        tasks.mkdir()
+        content = "line one line two\n"
+        (originals / "RFE-001.md").write_text(content, encoding="utf-8")
+        (tasks / "RFE-001.md").write_text(content, encoding="utf-8")
+        result = generate_diff("RFE-001", str(tasks), str(originals))
+        # No diff means empty string or None-like
+        assert not result or result.strip() == ""
+
+    def test_no_glued_lines_without_trailing_newline(self, tmp_path):
+        """Changed last line without trailing newline should not glue diff lines."""
+        originals = tmp_path / "originals"
+        tasks = tmp_path / "tasks"
+        originals.mkdir()
+        tasks.mkdir()
+        (originals / "RFE-001.md").write_text("old content")  # no trailing newline
+        (tasks / "RFE-001.md").write_text("new content")  # no trailing newline
+        result = generate_diff("RFE-001", str(tasks), str(originals))
+        assert result is not None
+        # Each diff line should be on its own line
+        lines = result.split("\n")
+        minus_lines = [ln for ln in lines if ln.startswith("-") and not ln.startswith("---")]
+        plus_lines = [ln for ln in lines if ln.startswith("+") and not ln.startswith("+++")]
+        assert len(minus_lines) >= 1
+        assert len(plus_lines) >= 1
+        # No line should contain both a '-' prefix and a '+' prefix (glued)
+        for line in lines:
+            if line.startswith("-") and not line.startswith("---"):
+                assert "\n+" not in line, "Diff lines are glued together"
+
+
+class TestGenerateDiffStderrWarnings:
+    """Verify that policy-suppressed diffs emit stderr warnings."""
+
+    def test_symlink_warns_stderr(self, tmp_path, capsys):
+        originals = tmp_path / "originals"
+        tasks = tmp_path / "tasks"
+        secret = tmp_path / "secret.txt"
+        originals.mkdir()
+        tasks.mkdir()
+        secret.write_text("secret data\n")
+        (originals / "RFE-001.md").symlink_to(secret)
+        (tasks / "RFE-001.md").write_text("revised\n")
+        result = generate_diff("RFE-001", str(tasks), str(originals))
+        assert result is None
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+        assert "RFE-001" in captured.err
+
+    def test_oversized_warns_stderr(self, tmp_path, capsys):
+        originals = tmp_path / "originals"
+        tasks = tmp_path / "tasks"
+        originals.mkdir()
+        tasks.mkdir()
+        (originals / "BIG.md").write_text("x" * (MAX_DIFF_FILE_SIZE + 1))
+        (tasks / "BIG.md").write_text("small content")
+        result = generate_diff("BIG", str(tasks), str(originals))
+        assert result is None
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+        assert "BIG" in captured.err
+
+
+class TestOpenNofollowEncoding:
+    """Verify os.fdopen uses UTF-8 encoding with error replacement."""
+
+    def test_utf8_content_read_correctly(self, tmp_path):
+        f = tmp_path / "utf8.md"
+        f.write_text("café naïve", encoding="utf-8")
+        result = _open_nofollow(str(f), 1024)
+        assert result is not None
+        with result:
+            content = result.read()
+        assert "café" in content
+        assert "naïve" in content
+
+    def test_invalid_utf8_replaced(self, tmp_path):
+        f = tmp_path / "bad.md"
+        # Write raw bytes that are not valid UTF-8
+        f.write_bytes(b"hello \xff\xfe world")
+        result = _open_nofollow(str(f), 1024)
+        assert result is not None
+        with result:
+            content = result.read()
+        # Should not raise, replacement char should appear
+        assert "hello" in content
+        assert "world" in content

@@ -2,6 +2,7 @@
 """Generate an HTML review report from review artifacts."""
 
 import difflib
+import io
 import os
 import re
 import stat
@@ -178,10 +179,17 @@ def _open_nofollow(path, max_size):
         if not stat.S_ISREG(st.st_mode) or st.st_size > max_size:
             os.close(fd)
             return None
-        return os.fdopen(fd, "r")
+        return os.fdopen(fd, "r", encoding="utf-8", errors="replace")
     except OSError:
         os.close(fd)
         return None
+
+
+def _ensure_trailing_newline(lines):
+    """Ensure the last line ends with a newline to avoid glued diff output."""
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    return lines
 
 
 def generate_diff(rfe_id, tasks_dir, originals_dir):
@@ -189,22 +197,48 @@ def generate_diff(rfe_id, tasks_dir, originals_dir):
     orig = _safe_artifact_path(originals_dir, f"{rfe_id}.md")
     revised = _safe_artifact_path(tasks_dir, f"{rfe_id}.md")
     if not orig or not revised:
+        if not orig and not revised:
+            print(
+                f"WARNING: {rfe_id}: diff suppressed — both original and revised paths rejected by policy",
+                file=sys.stderr,
+            )
+        elif not orig:
+            print(
+                f"WARNING: {rfe_id}: diff suppressed — original path rejected by policy",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"WARNING: {rfe_id}: diff suppressed — revised path rejected by policy",
+                file=sys.stderr,
+            )
         return None
 
     orig_f = _open_nofollow(orig, MAX_DIFF_FILE_SIZE)
     if orig_f is None:
+        print(
+            f"WARNING: {rfe_id}: diff suppressed — original file rejected (symlink or exceeds {MAX_DIFF_FILE_SIZE} bytes)",
+            file=sys.stderr,
+        )
         return None
     with orig_f:
         orig_lines = orig_f.readlines()
 
     revised_f = _open_nofollow(revised, MAX_DIFF_FILE_SIZE)
     if revised_f is None:
+        print(
+            f"WARNING: {rfe_id}: diff suppressed — revised file rejected (symlink or exceeds {MAX_DIFF_FILE_SIZE} bytes)",
+            file=sys.stderr,
+        )
         return None
     with revised_f:
         revised_content = revised_f.read()
 
     revised_content = _strip_frontmatter(revised_content)
-    revised_lines = revised_content.splitlines(keepends=True)
+    revised_lines = io.StringIO(revised_content).readlines()
+
+    orig_lines = _ensure_trailing_newline(orig_lines)
+    revised_lines = _ensure_trailing_newline(revised_lines)
 
     diff = difflib.unified_diff(orig_lines, revised_lines, fromfile=orig, tofile=revised)
     return "".join(diff)
