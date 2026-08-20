@@ -213,17 +213,24 @@ def _generate_reports(args):
 def _record_split_failure(server, user, token, parent_key, reason, error, args, cfg, parent_data):
     """Record a split that did not complete: review frontmatter, then Jira comment and label.
 
-    The Jira half is best-effort on purpose. The point of recording is to survive a failure, and
-    under the failures most worth recording — an expired token, an unreachable instance — these
-    same calls raise. An unguarded write here would replace the diagnosis with a traceback.
+    Both halves are best-effort on purpose. The point of recording is to survive a failure, and
+    an unguarded write here would replace the diagnosis with a traceback — the Jira calls raise
+    under the failures most worth recording (expired token, unreachable instance), and the local
+    write raises on a corrupt or read-only review file.
     """
     review_path = _find_review(args.artifacts_dir, parent_key, cfg)
     if review_path:
-        update_frontmatter(
-            review_path,
-            {"error": error, "needs_attention": True, "needs_attention_reason": reason},
-            cfg["review_schema"],
-        )
+        try:
+            update_frontmatter(
+                review_path,
+                {"error": error, "needs_attention": True, "needs_attention_reason": reason},
+                cfg["review_schema"],
+            )
+        except Exception as e:
+            print(
+                f"  Warning: could not record the failure on {parent_key}'s review ({e}).",
+                file=sys.stderr,
+            )
 
     entry = {
         cfg["id_field"]: parent_key,
@@ -966,11 +973,6 @@ def main():
         print(f"Done. Index rebuilt at {args.artifacts_dir}/rfes.md")
     else:
         print(f"\nDone. {len(results)} {type_label.lower()}(s) processed.")
-
-    if submit_errors:
-        print(f"\n{len(submit_errors)} {type_label}(s) failed during submit:", file=sys.stderr)
-        for eid, emsg in submit_errors:
-            print(f"  {eid}: {emsg}", file=sys.stderr)
 
     _finish(args, type_label, submit_errors)
 

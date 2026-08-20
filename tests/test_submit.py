@@ -907,6 +907,33 @@ class TestSplitFailureIsRecorded:
             "a batch whose every input was a split produced no run report"
         )
 
+    def test_corrupt_review_file_does_not_take_the_run_down(self, art_dir):
+        """Recording is best-effort on the local half too.
+
+        If the review file cannot be updated (corrupt frontmatter here; read-only or
+        schema-invalid in the wild), the refusal branch must warn and carry on to the report,
+        not replace the diagnosis with a traceback.
+        """
+        _write(f"{art_dir}/rfe-tasks/RHAIRFE-1000.md", self.PARENT_TASK)
+        # A review file whose frontmatter cannot be parsed, let alone updated.
+        _write(f"{art_dir}/rfe-reviews/RHAIRFE-1000-review.md", "---\n: not yaml [\n---\n")
+        for i in range(1, 8):  # 7 leaves > MAX_LEAF_CHILDREN -> refusal branch
+            _write(
+                f"{art_dir}/rfe-tasks/RFE-{i:03d}.md",
+                "---\nrfe_id: RFE-%03d\ntitle: Child %d\npriority: Major\n"
+                "status: Ready\nparent_key: RHAIRFE-1000\n---\n\nChild.\n" % (i, i),
+            )
+
+        stdout, stderr, rc = _run_submit(
+            art_dir, ["--generate-report", "--report-timestamp", "20260818-120000"]
+        )
+
+        assert rc == 0, stdout + stderr
+        # The handled path, not a crash. (stderr may still QUOTE a traceback: submit.py wraps
+        # the HTML generator's own, pre-existing crash on corrupt reviews in a warning.)
+        assert "could not record the failure" in stderr
+        assert os.path.exists(f"{art_dir}/auto-fix-runs/20260818-120000.yaml")
+
     def test_generic_failure_records_and_still_reports(self, art_dir, monkeypatch, tmp_path):
         """Exit code 1 from split_submit: record it, write the report, then exit 1."""
         self._split_only_batch(art_dir)
