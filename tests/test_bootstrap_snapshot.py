@@ -1209,6 +1209,25 @@ class TestLoadRunReportRejectsCorruptFiles:
         with pytest.raises(ValueError, match="malformed per_rfe entries"):
             _load_run_report(results, run)
 
+    def test_missing_item_key_raises(self, tmp_path):
+        """A mapping without the configured key is the drift shape, not an empty run.
+
+        An empty LIST keeps the documented fallback (zero-count runs are legitimate since
+        bc2f553); a missing KEY means writer and reader disagree about the schema.
+        """
+        results, run = self._write_report(tmp_path, "results:\n  passed: 3\n")
+
+        with pytest.raises(ValueError, match="has no per_rfe item list"):
+            _load_run_report(results, run)
+
+    def test_empty_item_list_is_still_none(self, tmp_path):
+        """Key present, list empty — the legitimate zero-count shape keeps its meaning."""
+        results, run = self._write_report(tmp_path, "per_rfe: []\n")
+
+        ids, report = _load_run_report(results, run)
+
+        assert ids is None and report is None
+
     def test_missing_file_is_still_none(self, tmp_path):
         """Absence keeps its meaning — only corruption raises."""
         results = str(tmp_path / "results")

@@ -76,6 +76,12 @@ def _load_run_report(results_dir, run_name, config=None):
         raise ValueError(f"run report {path} is unreadable: {e}") from e
     if not isinstance(report, dict):
         raise ValueError(f"run report {path} is not a mapping (got {type(report).__name__})")
+    if item_key not in report:
+        # The drift shape: a report written under a different item key. An empty LIST is a
+        # legitimate zero-count run and keeps the documented fallback; a missing KEY means the
+        # writer and this reader disagree about the schema, and pretending the report is absent
+        # would hide exactly that.
+        raise ValueError(f"run report {path} has no {item_key} item list")
     try:
         ids = {e["id"] for e in report.get(item_key, [])}
     except (TypeError, KeyError) as e:
