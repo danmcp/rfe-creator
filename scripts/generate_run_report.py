@@ -26,7 +26,7 @@ TYPE_CONFIG = {
         "reviews_dir": "rfe-reviews",
         "item_key": "per_rfe",
         "output_prefix": "",
-        "extra_entry_fields": [],
+        "extra_entry_fields": ["needs_attention"],
         "scan_tasks": scan_task_files,
         "id_field": "rfe_id",
         # parent_key values that mean "split from"; see split_children_map.
@@ -51,6 +51,11 @@ TYPE_CONFIG = {
 }
 
 SCORE_FIELDS = TYPE_CONFIG["rfe"]["score_fields"]
+
+# submit.py writes this marker into review frontmatter when split_submit refuses
+# a split outright — too many leaf children (exit 2) or a Jira conflict (exit 3).
+# Nothing was created in Jira, so the parent is blocked, not split.
+SPLIT_REFUSED_PREFIX = "split_refused:"
 
 
 def split_children_map(artifacts_dir, config):
@@ -107,7 +112,7 @@ def build_report(
     before_totals = {f: [] for f in score_fields}
     after_totals = {f: [] for f in score_fields}
     before_score_list, after_score_list = [], []
-    counts = {"passed": 0, "failed": 0, "split": 0, "errors": 0}
+    counts = {"passed": 0, "failed": 0, "split": 0, "blocked": 0, "errors": 0}
 
     for item_id in expanded_ids:
         if entry_type == "rfe":
@@ -164,7 +169,18 @@ def build_report(
         if kids:
             entry["children"] = kids
 
-        if rec == "split":
+        # A refused split recommended `split` but produced nothing in Jira. Read
+        # the outcome submit.py recorded rather than re-deriving it here — the
+        # cap lives in split_submit and refusal has more than one cause.
+        review_error = data.get("error") or ""
+        blocked_reason = None
+        if review_error.startswith(SPLIT_REFUSED_PREFIX):
+            blocked_reason = data.get("needs_attention_reason") or review_error
+            entry["blocked_reason"] = blocked_reason
+
+        if blocked_reason:
+            counts["blocked"] += 1
+        elif rec == "split":
             counts["split"] += 1
         elif data.get("pass", False):
             counts["passed"] += 1

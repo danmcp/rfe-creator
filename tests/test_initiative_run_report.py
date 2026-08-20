@@ -277,7 +277,13 @@ class TestSplitChildrenIncluded:
         ids = [e["id"] for e in report["per_initiative"]]
         assert ids == ["INIT-001", "INIT-002", "INIT-003"]
         assert report["per_initiative"][0]["children"] == ["INIT-002", "INIT-003"]
-        assert report["results"] == {"passed": 2, "failed": 0, "split": 1, "errors": 0}
+        assert report["results"] == {
+            "passed": 2,
+            "failed": 0,
+            "split": 1,
+            "blocked": 0,
+            "errors": 0,
+        }
         # input_count reflects caller-supplied IDs only
         assert report["input_count"] == 1
 

@@ -47,6 +47,30 @@ Looks good.
 """
 
 
+REVIEW_REFUSED_TEMPLATE = """\
+---
+rfe_id: {rfe_id}
+score: 6
+pass: false
+recommendation: split
+feasibility: feasible
+auto_revised: false
+needs_attention: true
+needs_attention_reason: {reason}
+error: '{error}'
+scores:
+  what: 2
+  why: 1
+  open_to_how: 2
+  not_a_task: 1
+  right_sized: 0
+---
+
+## Feedback
+Too big.
+"""
+
+
 def _write(path, content):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
@@ -385,3 +409,99 @@ class TestGenerateReviewPdfArtifactsDir:
         with open(out_file) as f:
             html = f.read()
         assert "RHAIRFE-500" in html
+
+
+class TestRefusedSplitIsBlockedNotSplit:
+    """A split split_submit refused created nothing in Jira — it is blocked work.
+
+    submit.py records the refusal in the review frontmatter; the report surfaces
+    it rather than re-deriving the leaf-count rule that lives in split_submit.
+    """
+
+    def _refused(self, art_dir, rfe_id, error, reason="Automatic splitting produced too many"):
+        _write(f"{art_dir}/rfe-tasks/{rfe_id}.md", TASK_TEMPLATE.format(rfe_id=rfe_id, extra=""))
+        _write(
+            f"{art_dir}/rfe-reviews/{rfe_id}-review.md",
+            REVIEW_REFUSED_TEMPLATE.format(rfe_id=rfe_id, reason=reason, error=error),
+        )
+
+    def test_too_many_children_is_blocked(self, art_dir):
+        self._refused(art_dir, "RHAIRFE-2429", "split_refused: too many leaf children")
+
+        report = build_report(["RHAIRFE-2429"], "2026-08-15T03:09:45Z", 5, [], [])
+
+        entry = report["per_rfe"][0]
+        assert entry["blocked_reason"] == "Automatic splitting produced too many"
+        assert report["results"]["blocked"] == 1
+        assert report["results"]["split"] == 0
+
+    def test_jira_conflict_is_also_blocked(self, art_dir):
+        self._refused(
+            art_dir,
+            "RHAIRFE-2455",
+            "split_refused: jira conflict",
+            reason="Parent description was modified in Jira since fetch.",
+        )
+
+        report = build_report(["RHAIRFE-2455"], "2026-08-15T03:09:45Z", 5, [], [])
+
+        assert report["per_rfe"][0]["blocked_reason"].startswith("Parent description")
+        assert report["results"]["blocked"] == 1
+
+    def test_recommendation_is_preserved(self, art_dir):
+        """`recommendation` is what the review advised; blocked_reason is what happened."""
+        self._refused(art_dir, "RHAIRFE-3121", "split_refused: too many leaf children")
+
+        report = build_report(["RHAIRFE-3121"], "2026-08-15T03:09:45Z", 5, [], [])
+
+        assert report["per_rfe"][0]["recommendation"] == "split"
+
+    def test_successful_split_is_untouched(self, art_dir):
+        """A split that went through still counts as split and carries no reason."""
+        _write(
+            f"{art_dir}/rfe-tasks/RHAIRFE-3079.md",
+            TASK_TEMPLATE.format(rfe_id="RHAIRFE-3079", extra=""),
+        )
+        _write(
+            f"{art_dir}/rfe-reviews/RHAIRFE-3079-review.md",
+            REVIEW_TEMPLATE.format(
+                rfe_id="RHAIRFE-3079",
+                score=8,
+                pass_val="false",
+                recommendation="split",
+                right_sized=1,
+            ),
+        )
+
+        report = build_report(["RHAIRFE-3079"], "2026-08-06T15:21:14Z", 5, [], [])
+
+        assert "blocked_reason" not in report["per_rfe"][0]
+        assert report["results"]["split"] == 1
+        assert report["results"]["blocked"] == 0
+
+    def test_unrelated_review_error_is_not_blocked(self, art_dir):
+        """Only the split_refused marker means blocked, not any error field."""
+        _write(
+            f"{art_dir}/rfe-tasks/RHAIRFE-9000.md",
+            TASK_TEMPLATE.format(rfe_id="RHAIRFE-9000", extra=""),
+        )
+        _write(
+            f"{art_dir}/rfe-reviews/RHAIRFE-9000-review.md",
+            REVIEW_REFUSED_TEMPLATE.format(
+                rfe_id="RHAIRFE-9000", reason="Scorer timed out", error="assess_failed: timeout"
+            ),
+        )
+
+        report = build_report(["RHAIRFE-9000"], "2026-08-15T03:09:45Z", 5, [], [])
+
+        assert "blocked_reason" not in report["per_rfe"][0]
+        assert report["results"]["blocked"] == 0
+        assert report["results"]["split"] == 1
+
+    def test_needs_attention_is_surfaced_on_rfe_entries(self, art_dir):
+        """The initiative report already carried this; the RFE side did not."""
+        self._refused(art_dir, "RHAIRFE-2429", "split_refused: too many leaf children")
+
+        report = build_report(["RHAIRFE-2429"], "2026-08-15T03:09:45Z", 5, [], [])
+
+        assert report["per_rfe"][0]["needs_attention"] is True
