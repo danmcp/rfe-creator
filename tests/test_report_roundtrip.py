@@ -7,12 +7,16 @@ list by TYPE_CONFIG[type]["item_key"]. bootstrap_snapshot._load_run_report reads
 BOOTSTRAP_CONFIG[type]["item_key"]. Two uncoupled constant pairs, in two modules, with nothing
 tying them together.
 
-When either pair drifts the reader takes its "no run report" path: it warns to stderr, skips the
-ID filter, includes every fetched issue, and exits 0. Because bootstrap writes bare-string snapshot
-entries and snapshot_fetch.diff_snapshots reads a missing `processed` field as True, the wrongly
-admitted issues are recorded as processed-and-unchanged and are then excluded from selection by
-every later incremental fetch. Nothing demotes them (only a hash change resets `processed`), so the
-damage is silent and permanent. Measured on live data: a real run report filters 2277 issues to 11.
+When either pair drifts the reader takes its "no run report" path. Before this guard existed that
+was catastrophic and silent: bootstrap wrote bare-string entries, snapshot_fetch.diff_snapshots
+reads a missing `processed` field as True, and only a hash change ever resets it — so every
+wrongly admitted issue was recorded processed-and-unchanged and excluded from selection forever.
+Measured on live data, a real run report filters 2277 issues to 11.
+
+Bootstrap now backstops that path (refusing a visibly partial results dir, and writing fallback
+entries as {hash, processed: false} so over-included issues resurface as NEW), which converts the
+damage from permanent to noisy: a full re-triage of the backlog and hours of needless changelog
+lookups. This guard is the first line — it makes the drift a test failure instead of a bad run.
 
 Equality asserts between the two constant dicts would not catch this — the path pair is a separate
 pair, and for type rfe both prefixes are "" so an rfe-only check is structurally blind to prefix

@@ -1045,6 +1045,86 @@ class TestBootstrapIntegration:
         assert "--include-all" in r.stderr
         assert not os.path.exists(os.path.join(art_dir, "auto-fix-runs"))
 
+    def test_corrupt_report_fails_loudly(self, tmp_path, mock_jira):
+        """A report that exists but cannot be parsed is not treated as absent."""
+        url, server = mock_jira
+        server.issues = {"RHAIRFE-1": "Issue one."}
+        results = _make_results_dir(tmp_path, ["20260401-120000"], latest="20260401-120000")
+        report_dir = os.path.join(results, "20260401-120000", "auto-fix-runs")
+        os.makedirs(report_dir, exist_ok=True)
+        with open(os.path.join(report_dir, "20260401-120000.yaml"), "w") as f:
+            f.write("per_rfe: [ {id: RHAIRFE-1")
+        art_dir = str(tmp_path / "artifacts")
+        os.makedirs(art_dir)
+        env = {
+            **os.environ,
+            "JIRA_SERVER": url,
+            "JIRA_USER": "test@example.com",
+            "JIRA_TOKEN": "test-token",
+        }
+
+        r = subprocess.run(
+            [
+                sys.executable,
+                SCRIPT,
+                "--results-dir",
+                results,
+                "--artifacts-dir",
+                art_dir,
+                "project = RHAIRFE",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert r.returncode == 1
+        assert "unreadable" in r.stderr
+        assert "--include-all" in r.stderr
+        assert "Traceback" not in r.stderr
+        assert not os.path.exists(os.path.join(art_dir, "auto-fix-runs"))
+
+    def test_include_all_overrides_a_corrupt_report(self, tmp_path, mock_jira):
+        """The recovery override applies to corruption too, and stays fail-safe."""
+        url, server = mock_jira
+        server.issues = {"RHAIRFE-1": "Issue one."}
+        results = _make_results_dir(tmp_path, ["20260401-120000"], latest="20260401-120000")
+        report_dir = os.path.join(results, "20260401-120000", "auto-fix-runs")
+        os.makedirs(report_dir, exist_ok=True)
+        with open(os.path.join(report_dir, "20260401-120000.yaml"), "w") as f:
+            f.write("per_rfe: [ {id: RHAIRFE-1")
+        art_dir = str(tmp_path / "artifacts")
+        os.makedirs(art_dir)
+        env = {
+            **os.environ,
+            "JIRA_SERVER": url,
+            "JIRA_USER": "test@example.com",
+            "JIRA_TOKEN": "test-token",
+        }
+
+        r = subprocess.run(
+            [
+                sys.executable,
+                SCRIPT,
+                "--results-dir",
+                results,
+                "--artifacts-dir",
+                art_dir,
+                "--include-all",
+                "project = RHAIRFE",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert r.returncode == 0, r.stderr
+        snapshot_dir = os.path.join(art_dir, "auto-fix-runs")
+        snapshots = [f for f in os.listdir(snapshot_dir) if f.startswith("issue-snapshot-")]
+        with open(os.path.join(snapshot_dir, snapshots[0])) as f:
+            snap = yaml.safe_load(f)
+        assert all(e["processed"] is False for e in snap["issues"].values())
+
     def test_include_all_overrides_the_refusal(self, tmp_path, mock_jira):
         """The escape hatch must exist: bootstrap is the tool you reach for in a bad state."""
         url, server = mock_jira
@@ -1085,6 +1165,58 @@ class TestBootstrapIntegration:
         with open(os.path.join(snapshot_dir, snapshots[0])) as f:
             snap = yaml.safe_load(f)
         assert all(e["processed"] is False for e in snap["issues"].values())
+
+
+class TestLoadRunReportRejectsCorruptFiles:
+    """Present-but-unreadable is not absence.
+
+    Absence has a documented include-all fallback; a corrupt report says nothing about what the
+    run processed. Normalizing these to (None, None) would either mislabel the failure as a
+    partial clone or silently include everything — the conflation this reader was just taught
+    to avoid. None of the 278 published reports have these shapes; this is defence.
+    """
+
+    def _write_report(self, tmp_path, body, run_name="20260401-120000"):
+        results = str(tmp_path / "results")
+        report_dir = os.path.join(results, run_name, "auto-fix-runs")
+        os.makedirs(report_dir)
+        with open(os.path.join(report_dir, f"{run_name}.yaml"), "w") as f:
+            f.write(body)
+        return results, run_name
+
+    def test_malformed_yaml_raises(self, tmp_path):
+        results, run = self._write_report(tmp_path, "per_rfe: [ {id: RHAIRFE-1")
+
+        with pytest.raises(ValueError, match="unreadable"):
+            _load_run_report(results, run)
+
+    def test_non_mapping_raises(self, tmp_path):
+        results, run = self._write_report(tmp_path, "- just\n- a\n- list\n")
+
+        with pytest.raises(ValueError, match="not a mapping"):
+            _load_run_report(results, run)
+
+    def test_empty_file_raises(self, tmp_path):
+        """yaml.safe_load('') is None — a present-but-empty file is corrupt, not absent."""
+        results, run = self._write_report(tmp_path, "")
+
+        with pytest.raises(ValueError, match="not a mapping"):
+            _load_run_report(results, run)
+
+    def test_entries_without_id_raise(self, tmp_path):
+        results, run = self._write_report(tmp_path, "per_rfe:\n  - recommendation: submit\n")
+
+        with pytest.raises(ValueError, match="malformed per_rfe entries"):
+            _load_run_report(results, run)
+
+    def test_missing_file_is_still_none(self, tmp_path):
+        """Absence keeps its meaning — only corruption raises."""
+        results = str(tmp_path / "results")
+        os.makedirs(os.path.join(results, "20260401-120000"))
+
+        ids, report = _load_run_report(results, "20260401-120000")
+
+        assert ids is None and report is None
 
 
 class TestLoadRunReportConfig:

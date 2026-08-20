@@ -55,7 +55,13 @@ BOOTSTRAP_CONFIG = {
 def _load_run_report(results_dir, run_name, config=None):
     """Load processed IDs and report from the run's item list.
 
-    Returns (set_of_ids, report_dict) or (None, None) if no report found.
+    Returns (set_of_ids, report_dict), or (None, None) if no report file exists.
+
+    Raises ValueError when the file exists but cannot be understood — unreadable, malformed YAML,
+    not a mapping, or entries without an id. That is a different situation from absence: absence
+    has a documented fallback, whereas a corrupt report says nothing about what the run processed,
+    and treating it as absent would misdiagnose it (0 of the 278 published reports have any of
+    these shapes, so this is defence, not compatibility).
     """
     cfg = config or BOOTSTRAP_CONFIG["rfe"]
     report_prefix = cfg["report_prefix"]
@@ -63,9 +69,17 @@ def _load_run_report(results_dir, run_name, config=None):
     path = os.path.join(results_dir, run_name, "auto-fix-runs", f"{report_prefix}{run_name}.yaml")
     if not os.path.exists(path):
         return None, None
-    with open(path, encoding="utf-8") as f:
-        report = yaml.safe_load(f)
-    ids = {e["id"] for e in report.get(item_key, [])}
+    try:
+        with open(path, encoding="utf-8") as f:
+            report = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError) as e:
+        raise ValueError(f"run report {path} is unreadable: {e}") from e
+    if not isinstance(report, dict):
+        raise ValueError(f"run report {path} is not a mapping (got {type(report).__name__})")
+    try:
+        ids = {e["id"] for e in report.get(item_key, [])}
+    except (TypeError, KeyError) as e:
+        raise ValueError(f"run report {path} has malformed {item_key} entries: {e}") from e
     if not ids:
         return None, None
     return ids, report
@@ -369,7 +383,21 @@ def main():
     print(f"Fetched {len(current)} issues from Jira", file=sys.stderr)
 
     # Filter to issues that were actually processed in the run
-    processed_ids, report = _load_run_report(args.results_dir, run_name, config=boot_config)
+    try:
+        # The report half of the tuple is unused here — main() only needs the ID filter.
+        processed_ids, _ = _load_run_report(args.results_dir, run_name, config=boot_config)
+    except ValueError as e:
+        # Present but not understood is not the same as absent: absence has a documented
+        # fallback, a corrupt report does not. Only an explicit --include-all proceeds.
+        if not args.include_all:
+            print(
+                f"Error: {e}. Pass --include-all to snapshot every fetched issue "
+                f"as unprocessed instead.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"Warning: {e} — --include-all set, including all issues", file=sys.stderr)
+        processed_ids = None
     unfiltered = processed_ids is None
     if unfiltered:
         if not args.include_all and _run_dir_has_snapshots(args.results_dir, run_name):
