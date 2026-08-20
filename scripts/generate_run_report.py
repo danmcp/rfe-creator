@@ -103,6 +103,10 @@ def build_report(
     entry_type="rfe",
     report_stage="pre_submit",
 ):
+    if report_stage not in REPORT_STAGES:
+        # argparse guards the CLI; this guards programmatic callers. Consumers switch on this
+        # field, so an unknown value must fail at write time, not at the reader.
+        raise ValueError(f"unsupported report stage: {report_stage!r} (expected {REPORT_STAGES})")
     if artifacts_dir is None:
         artifacts_dir = DEFAULT_ARTIFACTS_DIR
     if retried_ids is None:

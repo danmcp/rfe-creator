@@ -560,6 +560,13 @@ class TestReportRootMetadata:
 
         assert report["type"] == "initiative"
 
+    def test_build_report_rejects_an_unknown_stage(self, art_dir):
+        """argparse only guards the CLI; a programmatic caller must fail at write time too."""
+        self._one_rfe(art_dir)
+
+        with pytest.raises(ValueError, match="unsupported report stage"):
+            build_report(["RHAIRFE-1234"], "2026-08-18T09:00:00Z", report_stage="submitted")
+
     def test_cli_rejects_an_unknown_stage(self, tmp_path):
         os.makedirs(tmp_path / "artifacts" / "rfe-reviews")
         result = subprocess.run(
