@@ -483,6 +483,29 @@ class TestRenamePersistsLocalId:
         assert any("local_id" in e for e in errors)
 
 
+class TestRenameRejectsMalformedIds:
+    """Both ids become path components; jira_key arrives from a Jira API
+    response, so shapes outside the documented grammar are rejected before
+    any file operation (path-traversal guard)."""
+
+    def test_traversal_in_jira_key_rejected(self, tmp_dir):
+        os.makedirs("artifacts/rfe-tasks")
+        with pytest.raises(ValueError, match="invalid Jira key"):
+            rename_to_jira_key("artifacts", "RFE-001", "../../etc/passwd")
+
+    def test_traversal_in_local_id_rejected(self, tmp_dir):
+        os.makedirs("artifacts/rfe-tasks")
+        with pytest.raises(ValueError, match="invalid local id"):
+            rename_to_jira_key("artifacts", "../RFE-001", "RHAIRFE-1600")
+
+    def test_initiative_guards(self, tmp_dir):
+        os.makedirs("artifacts/initiatives")
+        with pytest.raises(ValueError, match="invalid Jira key"):
+            rename_initiative_to_jira_key("artifacts", "INIT-001", "RHOAIENG-1/../2")
+        with pytest.raises(ValueError, match="invalid local id"):
+            rename_initiative_to_jira_key("artifacts", "INIT-001x", "RHOAIENG-1234")
+
+
 class TestRenameInitiativeToJiraKey:
     """Companion files must be renamed as companions, not as the task file.
 

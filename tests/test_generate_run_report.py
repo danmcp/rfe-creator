@@ -590,6 +590,22 @@ class TestEntryProvenanceFields:
         assert entry["role"] == "leaf"
         assert entry["tracker_ref"] == "RHAIRFE-1000"
 
+    def test_empty_frontmatter_review_is_an_error_entry(self, art_dir):
+        """read_frontmatter normalizes empty/non-mapping frontmatter to {} —
+        without a guard that review becomes a normal entry with score 0,
+        silently dragging the averages. Seen in the published corpus
+        (20260727-031043/RHAIRFE-2911-review.md)."""
+        self._task(art_dir, "RHAIRFE-2911", status="Ready")
+        _write(f"{art_dir}/rfe-reviews/RHAIRFE-2911-review.md", "---\n---\n\n## Feedback\n")
+
+        report = build_report(["RHAIRFE-2911"], "2026-08-21T12:00:00Z")
+        entry = report["per_rfe"][0]
+
+        assert "error" in entry
+        assert entry["tracker_ref"] == "RHAIRFE-2911"
+        assert report["results"]["errors"] == 1
+        assert report["after_scores_avg"]["total"] == 0.0  # nothing scored, not a 0-score entry
+
     def test_missing_task_file_omits_role(self, art_dir):
         """Absent means not determined — never guessed."""
         self._review(art_dir, "RHAIRFE-1234")

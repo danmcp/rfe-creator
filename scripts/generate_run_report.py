@@ -164,8 +164,11 @@ def build_report(
             continue
         try:
             data, _ = read_frontmatter(review_path)
-            if not isinstance(data, dict):
-                raise ValueError("review frontmatter is empty or not a mapping")
+            # read_frontmatter normalizes missing/empty/non-mapping frontmatter
+            # to {} — which would sail through as a normal entry with score 0
+            # and recommendation 'revise', silently dragging the averages.
+            if not isinstance(data, dict) or not data:
+                raise ValueError("review frontmatter is missing, empty or not a mapping")
         except Exception as e:
             per_item.append({"id": item_id, "tracker_ref": tracker_ref, "error": str(e)})
             counts["errors"] += 1

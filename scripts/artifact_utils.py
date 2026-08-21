@@ -871,6 +871,14 @@ def rename_to_jira_key(artifacts_dir, rfe_id, jira_key):
         rfe_id: e.g. "RFE-001"
         jira_key: e.g. "RHAIRFE-1600"
     """
+    # Both ids become path components below. rfe_id comes from validated
+    # frontmatter, but jira_key arrives from a Jira API response — reject
+    # anything that is not the documented shape before touching the fs.
+    if not re.fullmatch(r"RFE-\d+", rfe_id):
+        raise ValueError(f"rename_to_jira_key: invalid local id {rfe_id!r}")
+    if not re.fullmatch(r"RHAIRFE-\d+", jira_key):
+        raise ValueError(f"rename_to_jira_key: invalid Jira key {jira_key!r}")
+
     tasks_dir = os.path.join(artifacts_dir, "rfe-tasks")
     reviews_dir = os.path.join(artifacts_dir, "rfe-reviews")
 
@@ -923,6 +931,11 @@ def rename_initiative_to_jira_key(artifacts_dir, initiative_id, jira_key):
     Renames the task file, companion files, and review file.
     Updates initiative_id in frontmatter to the new Jira key.
     """
+    if not re.fullmatch(r"INIT-\d+", initiative_id):
+        raise ValueError(f"rename_initiative_to_jira_key: invalid local id {initiative_id!r}")
+    if not re.fullmatch(r"RHOAIENG-\d+", jira_key):
+        raise ValueError(f"rename_initiative_to_jira_key: invalid Jira key {jira_key!r}")
+
     initiatives_dir = os.path.join(artifacts_dir, "initiatives")
     reviews_dir = os.path.join(artifacts_dir, "initiative-reviews")
 
