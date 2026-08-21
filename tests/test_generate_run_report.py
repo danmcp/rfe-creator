@@ -507,6 +507,100 @@ class TestRefusedSplitIsBlockedNotSplit:
         assert report["per_rfe"][0]["needs_attention"] is True
 
 
+class TestEntryProvenanceFields:
+    """tracker_ref, role and local_id — the three-mode classification per entry.
+
+    | mode          | role         | tracker_ref  |
+    |---------------|--------------|--------------|
+    | intermediary  | intermediary | null         |
+    | blocked leaf  | leaf         | null         |
+    | submitted     | leaf         | the Jira key |
+    """
+
+    def _task(self, art_dir, rfe_id, status="Ready", parent=None, extra_fm=""):
+        parent_line = f"parent_key: {parent}\n" if parent else ""
+        _write(
+            f"{art_dir}/rfe-tasks/{rfe_id}.md",
+            f"---\nrfe_id: {rfe_id}\ntitle: T\npriority: Major\n"
+            f"status: {status}\n{parent_line}{extra_fm}---\n\nBody.\n",
+        )
+
+    def _review(self, art_dir, rfe_id, extra_fm=""):
+        _write(
+            f"{art_dir}/rfe-reviews/{rfe_id}-review.md",
+            f"---\nrfe_id: {rfe_id}\nscore: 9\npass: true\nrecommendation: submit\n"
+            f"feasibility: feasible\nauto_revised: false\nneeds_attention: false\n{extra_fm}"
+            "scores:\n  what: 2\n  why: 2\n  open_to_how: 2\n  not_a_task: 2\n  right_sized: 2\n"
+            "---\n\nok.\n",
+        )
+
+    def test_submitted_entry_carries_tracker_ref_and_provenance(self, art_dir):
+        """Post-rename: id is the Jira key, local_id preserves where it came from."""
+        self._task(art_dir, "RHAIRFE-3082", status="Submitted", extra_fm="local_id: RFE-001\n")
+        self._review(art_dir, "RHAIRFE-3082", extra_fm="local_id: RFE-001\n")
+
+        report = build_report(["RHAIRFE-3082"], "2026-08-21T12:00:00Z")
+        entry = report["per_rfe"][0]
+
+        assert entry["tracker_ref"] == "RHAIRFE-3082"
+        assert entry["role"] == "leaf"
+        assert entry["local_id"] == "RFE-001"
+
+    def test_unsubmitted_local_entry_is_a_leaf_without_a_ticket(self, art_dir):
+        """Mode 1 shape: a Draft child whose split was refused."""
+        self._task(art_dir, "RFE-001", status="Draft", parent="RHAIRFE-1000")
+        self._review(art_dir, "RFE-001")
+        self._task(art_dir, "RHAIRFE-1000", status="Archived")
+        self._review(art_dir, "RHAIRFE-1000")
+
+        report = build_report(["RHAIRFE-1000"], "2026-08-21T12:00:00Z")
+        by_id = {e["id"]: e for e in report["per_rfe"]}
+
+        assert by_id["RFE-001"]["tracker_ref"] is None
+        assert by_id["RFE-001"]["role"] == "leaf"
+        assert "local_id" not in by_id["RFE-001"]
+
+    def test_archived_local_node_is_an_intermediary(self, art_dir):
+        """Mode 2: re-split stepping stone — never was and never will be a ticket."""
+        self._task(art_dir, "RHAIRFE-1000", status="Archived")
+        self._review(art_dir, "RHAIRFE-1000")
+        self._task(art_dir, "RFE-004", status="Archived", parent="RHAIRFE-1000")
+        self._review(art_dir, "RFE-004")
+        self._task(art_dir, "RFE-007", status="Ready", parent="RFE-004")
+        self._review(art_dir, "RFE-007")
+
+        report = build_report(["RHAIRFE-1000"], "2026-08-21T12:00:00Z")
+        by_id = {e["id"]: e for e in report["per_rfe"]}
+
+        assert by_id["RFE-004"]["role"] == "intermediary"
+        assert by_id["RFE-004"]["tracker_ref"] is None
+
+    def test_archived_jira_parent_is_not_an_intermediary(self, art_dir):
+        """The real split parent is also Archived — but it IS a ticket.
+
+        Classifying on Archived alone would mislabel exactly the row consumers
+        care about most; the rule requires a local id as well.
+        """
+        self._task(art_dir, "RHAIRFE-1000", status="Archived")
+        self._review(art_dir, "RHAIRFE-1000")
+
+        report = build_report(["RHAIRFE-1000"], "2026-08-21T12:00:00Z")
+        entry = report["per_rfe"][0]
+
+        assert entry["role"] == "leaf"
+        assert entry["tracker_ref"] == "RHAIRFE-1000"
+
+    def test_missing_task_file_omits_role(self, art_dir):
+        """Absent means not determined — never guessed."""
+        self._review(art_dir, "RHAIRFE-1234")
+
+        report = build_report(["RHAIRFE-1234"], "2026-08-21T12:00:00Z")
+        entry = report["per_rfe"][0]
+
+        assert "role" not in entry
+        assert entry["tracker_ref"] == "RHAIRFE-1234"
+
+
 class TestReportRootMetadata:
     """Root fields that let a consumer know what it is reading."""
 

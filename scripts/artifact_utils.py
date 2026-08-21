@@ -64,6 +64,15 @@ SCHEMAS = {
             "required": True,
             "pattern": r"^(RFE-\d+|RHAIRFE-\d+)$",
         },
+        # Pre-submission id, persisted at rename time. Renaming overwrites
+        # rfe_id with the Jira key, and this is the only durable record of
+        # which local draft a submitted item came from.
+        "local_id": {
+            "type": "string",
+            "required": False,
+            "pattern": r"^RFE-\d+$",
+            "default": None,
+        },
         "title": {
             "type": "string",
             "required": True,
@@ -101,6 +110,15 @@ SCHEMAS = {
             "type": "string",
             "required": True,
             "pattern": r"^(RFE-\d+|RHAIRFE-\d+)$",
+        },
+        # Pre-submission id, persisted at rename time. Renaming overwrites
+        # rfe_id with the Jira key, and this is the only durable record of
+        # which local draft a submitted item came from.
+        "local_id": {
+            "type": "string",
+            "required": False,
+            "pattern": r"^RFE-\d+$",
+            "default": None,
         },
         "score": {
             "type": "int",
@@ -175,6 +193,12 @@ SCHEMAS = {
             "required": True,
             "pattern": r"^(INIT-\d+|RHOAIENG-\d+)$",
         },
+        "local_id": {
+            "type": "string",
+            "required": False,
+            "pattern": r"^INIT-\d+$",
+            "default": None,
+        },
         "title": {
             "type": "string",
             "required": True,
@@ -206,6 +230,12 @@ SCHEMAS = {
             "type": "string",
             "required": True,
             "pattern": r"^(INIT-\d+|RHOAIENG-\d+)$",
+        },
+        "local_id": {
+            "type": "string",
+            "required": False,
+            "pattern": r"^INIT-\d+$",
+            "default": None,
         },
         "score": {
             "type": "int",
@@ -869,7 +899,9 @@ def rename_to_jira_key(artifacts_dir, rfe_id, jira_key):
             # Update frontmatter on main task file
             if new_name == f"{jira_key}.md":
                 update_frontmatter(
-                    new_path, {"rfe_id": jira_key, "status": "Submitted"}, "rfe-task"
+                    new_path,
+                    {"rfe_id": jira_key, "status": "Submitted", "local_id": rfe_id},
+                    "rfe-task",
                 )
 
     # Rename review file
@@ -881,7 +913,7 @@ def rename_to_jira_key(artifacts_dir, rfe_id, jira_key):
                 os.rename(old_path, new_path)
 
                 # Update frontmatter
-                update_frontmatter(new_path, {"rfe_id": jira_key}, "rfe-review")
+                update_frontmatter(new_path, {"rfe_id": jira_key, "local_id": rfe_id}, "rfe-review")
                 break
 
 
@@ -922,7 +954,7 @@ def rename_initiative_to_jira_key(artifacts_dir, initiative_id, jira_key):
             if new_name == f"{jira_key}.md":
                 update_frontmatter(
                     new_path,
-                    {"initiative_id": jira_key, "status": "Submitted"},
+                    {"initiative_id": jira_key, "status": "Submitted", "local_id": initiative_id},
                     "initiative-task",
                 )
 
@@ -931,7 +963,11 @@ def rename_initiative_to_jira_key(artifacts_dir, initiative_id, jira_key):
         if os.path.isfile(old_review):
             new_review = os.path.join(reviews_dir, f"{jira_key}-review.md")
             os.rename(old_review, new_review)
-            update_frontmatter(new_review, {"initiative_id": jira_key}, "initiative-review")
+            update_frontmatter(
+                new_review,
+                {"initiative_id": jira_key, "local_id": initiative_id},
+                "initiative-review",
+            )
 
 
 # ─── Index Rebuilding ───────────────────────────────────────────────────────────

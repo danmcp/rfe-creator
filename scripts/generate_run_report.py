@@ -31,6 +31,8 @@ TYPE_CONFIG = {
         "id_field": "rfe_id",
         # parent_key values that mean "split from"; see split_children_map.
         "child_parent_prefixes": ("RFE-", "RHAIRFE-"),
+        "tracker_prefix": "RHAIRFE-",
+        "local_prefix": "RFE-",
     },
     "initiative": {
         "score_fields": [
@@ -47,6 +49,8 @@ TYPE_CONFIG = {
         "scan_tasks": scan_initiative_task_files,
         "id_field": "initiative_id",
         "child_parent_prefixes": ("INIT-", "RHOAIENG-"),
+        "tracker_prefix": "RHOAIENG-",
+        "local_prefix": "INIT-",
     },
 }
 
@@ -86,6 +90,14 @@ def split_children_map(artifacts_dir, config):
     return children_map
 
 
+def _task_status_map(artifacts_dir, config):
+    """Map item id -> task frontmatter status, for role classification."""
+    return {
+        task_data[config["id_field"]]: task_data.get("status")
+        for _, task_data in config["scan_tasks"](artifacts_dir)
+    }
+
+
 def _parse_run_id(start_time):
     """Derive run_id from a timestamp. Accepts YYYYMMDD-HHMMSS or ISO format."""
     if re.match(r"^\d{8}-\d{6}$", start_time):
@@ -121,6 +133,7 @@ def build_report(
 
     # Expand ID list to include split children discovered from task files
     children_map = split_children_map(artifacts_dir, config)
+    status_map = _task_status_map(artifacts_dir, config)
     all_children = [c for kids in children_map.values() for c in kids]
     expanded_ids = list(ids) + [c for c in all_children if c not in ids]
 
@@ -137,18 +150,49 @@ def build_report(
             review_path = os.path.join(reviews_dir, f"{item_id}-review.md")
             if not os.path.exists(review_path):
                 review_path = None
+        # Error entries carry tracker_ref too — it derives from the id alone,
+        # and without it these are the only rows a consumer would still have
+        # to prefix-sniff.
+        is_tracker_id = item_id.startswith(config["tracker_prefix"])
+        tracker_ref = item_id if is_tracker_id else None
+
         if not review_path:
-            per_item.append({"id": item_id, "error": "review file not found"})
+            per_item.append(
+                {"id": item_id, "tracker_ref": tracker_ref, "error": "review file not found"}
+            )
             counts["errors"] += 1
             continue
         try:
             data, _ = read_frontmatter(review_path)
+            if not isinstance(data, dict):
+                raise ValueError("review frontmatter is empty or not a mapping")
         except Exception as e:
-            per_item.append({"id": item_id, "error": str(e)})
+            per_item.append({"id": item_id, "tracker_ref": tracker_ref, "error": str(e)})
             counts["errors"] += 1
             continue
 
         entry = {"id": item_id}
+
+        # The canonical remote reference (work-item-types-unified.md §5): the id
+        # itself once submitted, null while none exists. Consumers must never
+        # infer "is this a real ticket" from the id prefix again.
+        entry["tracker_ref"] = tracker_ref
+
+        # A local-id node that was split again is a structural stepping stone —
+        # archived, never submitted, its children re-parented at submit time by
+        # split_submit._collect_leaves. Everything else is a leaf. Absent means
+        # the task file was not found, so the role could not be determined.
+        task_status = status_map.get(item_id)
+        if task_status is not None:
+            is_local_id = item_id.startswith(config["local_prefix"])
+            entry["role"] = "intermediary" if is_local_id and task_status == "Archived" else "leaf"
+
+        # Provenance: the pre-submission id, persisted by the rename. Only
+        # meaningful once the entry id has become the Jira key.
+        local_id = data.get("local_id")
+        if local_id and local_id != item_id:
+            entry["local_id"] = local_id
+
         rec = data.get("recommendation", "revise")
         entry["recommendation"] = rec
         entry["auto_revised"] = data.get("auto_revised", False)

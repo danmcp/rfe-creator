@@ -16,6 +16,7 @@ from artifact_utils import (
     read_frontmatter,
     read_frontmatter_validated,
     rename_initiative_to_jira_key,
+    rename_to_jira_key,
     update_frontmatter,
     validate,
     write_frontmatter,
@@ -405,6 +406,81 @@ class TestInitiativeFrontmatter:
         data, _ = read_frontmatter("init-review.md")
         assert data["auto_revised"] is True
         assert data["initiative_id"] == "INIT-001"
+
+
+class TestRenamePersistsLocalId:
+    """Renaming to the Jira key must not destroy the pre-submission identity.
+
+    rfe_id/initiative_id is overwritten with the key, so before this the
+    RFE-001 -> RHAIRFE-3082 mapping survived only as a git rename in the
+    results repo's history — unreadable from any single commit. The run
+    report's provenance field reads local_id back from these files.
+    """
+
+    def _setup_rfe(self):
+        os.makedirs("artifacts/rfe-tasks")
+        os.makedirs("artifacts/rfe-reviews")
+        write_frontmatter(
+            "artifacts/rfe-tasks/RFE-001.md",
+            {"rfe_id": "RFE-001", "title": "T", "priority": "Major", "status": "Ready"},
+            "rfe-task",
+        )
+        write_frontmatter(
+            "artifacts/rfe-reviews/RFE-001-review.md",
+            {**VALID_REVIEW_FM, "rfe_id": "RFE-001"},
+            "rfe-review",
+        )
+
+    def test_rfe_task_and_review_carry_local_id(self, tmp_dir):
+        self._setup_rfe()
+
+        rename_to_jira_key("artifacts", "RFE-001", "RHAIRFE-3082")
+
+        task, _ = read_frontmatter("artifacts/rfe-tasks/RHAIRFE-3082.md")
+        review, _ = read_frontmatter("artifacts/rfe-reviews/RHAIRFE-3082-review.md")
+        assert task["rfe_id"] == "RHAIRFE-3082"
+        assert task["local_id"] == "RFE-001"
+        assert review["local_id"] == "RFE-001"
+
+    def test_renamed_files_still_validate(self, tmp_dir):
+        """local_id must be legal under the schemas or every later
+        update_frontmatter on a renamed file would raise."""
+        self._setup_rfe()
+
+        rename_to_jira_key("artifacts", "RFE-001", "RHAIRFE-3082")
+
+        data, _ = read_frontmatter_validated("artifacts/rfe-tasks/RHAIRFE-3082.md", "rfe-task")
+        assert data["local_id"] == "RFE-001"
+        # and a subsequent update keeps working
+        update_frontmatter(
+            "artifacts/rfe-tasks/RHAIRFE-3082.md", {"status": "Submitted"}, "rfe-task"
+        )
+
+    def test_initiative_rename_carries_local_id(self, tmp_dir):
+        os.makedirs("artifacts/initiatives")
+        os.makedirs("artifacts/initiative-reviews")
+        write_frontmatter(
+            "artifacts/initiatives/INIT-001.md",
+            VALID_INITIATIVE_TASK_FM.copy(),
+            "initiative-task",
+        )
+
+        rename_initiative_to_jira_key("artifacts", "INIT-001", "RHOAIENG-1234")
+
+        data, _ = read_frontmatter("artifacts/initiatives/RHOAIENG-1234.md")
+        assert data["local_id"] == "INIT-001"
+
+    def test_local_id_pattern_rejects_jira_keys(self):
+        """The field means "pre-submission id" — a Jira key in it is a bug."""
+        data = {
+            "rfe_id": "RHAIRFE-3082",
+            "title": "T",
+            "priority": "Major",
+            "status": "Submitted",
+            "local_id": "RHAIRFE-3082",
+        }
+        errors = validate(data, "rfe-task")
+        assert any("local_id" in e for e in errors)
 
 
 class TestRenameInitiativeToJiraKey:
