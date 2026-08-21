@@ -52,6 +52,17 @@ TYPE_CONFIG = {
 
 SCORE_FIELDS = TYPE_CONFIG["rfe"]["score_fields"]
 
+# Bumped only on a breaking change to the report shape. Absent means a report
+# written before versioning existed — consumers must treat those as legacy.
+REPORT_SCHEMA_VERSION = 1
+
+# Whether the per-entry values are final. The pipeline's REPORT phase runs
+# before submit, so the report it writes is a snapshot: nothing has been
+# created in Jira yet and no refusal has been recorded. submit.py regenerates
+# it afterwards. Defaults to pre_submit so a caller that forgets to say
+# understates its authority rather than overstating it.
+REPORT_STAGES = ("pre_submit", "final")
+
 # submit.py writes this marker into review frontmatter when split_submit refuses
 # a split outright — too many leaf children (exit 2) or a Jira conflict (exit 3).
 # Nothing was created in Jira, so the parent is blocked, not split.
@@ -90,7 +101,12 @@ def build_report(
     retry_success_ids=None,
     artifacts_dir=None,
     entry_type="rfe",
+    report_stage="pre_submit",
 ):
+    if report_stage not in REPORT_STAGES:
+        # argparse guards the CLI; this guards programmatic callers. Consumers switch on this
+        # field, so an unknown value must fail at write time, not at the reader.
+        raise ValueError(f"unsupported report stage: {report_stage!r} (expected {REPORT_STAGES})")
     if artifacts_dir is None:
         artifacts_dir = DEFAULT_ARTIFACTS_DIR
     if retried_ids is None:
@@ -198,6 +214,9 @@ def build_report(
         results["retry_successes"] = len(retry_success_ids)
 
     report = {
+        "report_schema_version": REPORT_SCHEMA_VERSION,
+        "type": entry_type,
+        "report_stage": report_stage,
         "run_id": _parse_run_id(start_time),
         "started": start_time,
         "completed": now,
@@ -239,6 +258,16 @@ def main():
         default="rfe",
         help="Entry type (default: rfe)",
     )
+    parser.add_argument(
+        "--report-stage",
+        choices=REPORT_STAGES,
+        default="pre_submit",
+        help=(
+            "Whether per-entry values are final. The pipeline's REPORT phase runs "
+            "before submit, so it writes pre_submit; submit.py regenerates with "
+            "final (default: pre_submit)"
+        ),
+    )
     parser.add_argument("ids", nargs="*", help="IDs (default: scan review files)")
     args = parser.parse_args()
 
@@ -269,6 +298,7 @@ def main():
         retry_success_ids=retry_ok,
         artifacts_dir=artifacts_dir,
         entry_type=args.type,
+        report_stage=args.report_stage,
     )
 
     out_dir = os.path.join(artifacts_dir, "auto-fix-runs")

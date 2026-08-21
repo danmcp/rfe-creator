@@ -184,6 +184,9 @@ def _generate_reports(args):
         ts,
         "--artifacts-dir",
         args.artifacts_dir,
+        # Regenerated after submit, so per-entry values are authoritative.
+        "--report-stage",
+        "final",
     ]
     if args.type == "initiative":
         yaml_cmd.extend(["--type", "initiative"])

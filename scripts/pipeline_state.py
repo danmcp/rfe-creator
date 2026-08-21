@@ -393,6 +393,8 @@ def _build_phase_config(pipeline_type):
                 f"python3 scripts/generate_run_report.py --type {pipeline_type}"
                 " --start-time {start_time}"
                 " --batch-size {batch_size}"
+                # This phase runs before submit — nothing is in Jira yet.
+                " --report-stage pre_submit"
             ),
         },
     }

@@ -505,3 +505,122 @@ class TestRefusedSplitIsBlockedNotSplit:
         report = build_report(["RHAIRFE-2429"], "2026-08-15T03:09:45Z", 5, [], [])
 
         assert report["per_rfe"][0]["needs_attention"] is True
+
+
+class TestReportRootMetadata:
+    """Root fields that let a consumer know what it is reading."""
+
+    def _one_rfe(self, art_dir):
+        _write(
+            f"{art_dir}/rfe-tasks/RHAIRFE-1234.md",
+            TASK_TEMPLATE.format(rfe_id="RHAIRFE-1234", extra=""),
+        )
+        _write(
+            f"{art_dir}/rfe-reviews/RHAIRFE-1234-review.md",
+            REVIEW_TEMPLATE.format(
+                rfe_id="RHAIRFE-1234",
+                score=9,
+                pass_val="true",
+                recommendation="submit",
+                right_sized=2,
+            ),
+        )
+
+    def test_schema_version_and_type_are_emitted(self, art_dir):
+        self._one_rfe(art_dir)
+
+        report = build_report(["RHAIRFE-1234"], "2026-08-18T09:00:00Z")
+
+        assert report["report_schema_version"] == 1
+        assert report["type"] == "rfe"
+
+    def test_stage_defaults_to_pre_submit(self, art_dir):
+        """A caller that forgets must understate authority, never overstate it."""
+        self._one_rfe(art_dir)
+
+        report = build_report(["RHAIRFE-1234"], "2026-08-18T09:00:00Z")
+
+        assert report["report_stage"] == "pre_submit"
+
+    def test_stage_is_final_when_asked(self, art_dir):
+        self._one_rfe(art_dir)
+
+        report = build_report(["RHAIRFE-1234"], "2026-08-18T09:00:00Z", report_stage="final")
+
+        assert report["report_stage"] == "final"
+
+    def test_type_follows_entry_type(self, tmp_path, monkeypatch):
+        for d in ["initiatives", "initiative-reviews"]:
+            os.makedirs(tmp_path / "artifacts" / d)
+        art = str(tmp_path / "artifacts")
+
+        report = build_report(
+            [], "2026-08-18T09:00:00Z", artifacts_dir=art, entry_type="initiative"
+        )
+
+        assert report["type"] == "initiative"
+
+    def test_build_report_rejects_an_unknown_stage(self, art_dir):
+        """argparse only guards the CLI; a programmatic caller must fail at write time too."""
+        self._one_rfe(art_dir)
+
+        with pytest.raises(ValueError, match="unsupported report stage"):
+            build_report(["RHAIRFE-1234"], "2026-08-18T09:00:00Z", report_stage="submitted")
+
+    def test_cli_rejects_an_unknown_stage(self, tmp_path):
+        os.makedirs(tmp_path / "artifacts" / "rfe-reviews")
+        result = subprocess.run(
+            [
+                sys.executable,
+                os.path.join(os.path.dirname(__file__), "..", "scripts", "generate_run_report.py"),
+                "--start-time",
+                "20260818-090000",
+                "--artifacts-dir",
+                str(tmp_path / "artifacts"),
+                "--report-stage",
+                "definitely-not-a-stage",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "invalid choice" in result.stderr
+
+    def test_cli_writes_the_stage_it_was_given(self, tmp_path):
+        art = str(tmp_path / "artifacts")
+        os.makedirs(f"{art}/rfe-tasks")
+        os.makedirs(f"{art}/rfe-reviews")
+        _write(
+            f"{art}/rfe-tasks/RHAIRFE-1234.md",
+            TASK_TEMPLATE.format(rfe_id="RHAIRFE-1234", extra=""),
+        )
+        _write(
+            f"{art}/rfe-reviews/RHAIRFE-1234-review.md",
+            REVIEW_TEMPLATE.format(
+                rfe_id="RHAIRFE-1234",
+                score=9,
+                pass_val="true",
+                recommendation="submit",
+                right_sized=2,
+            ),
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                os.path.join(os.path.dirname(__file__), "..", "scripts", "generate_run_report.py"),
+                "--start-time",
+                "20260818-090000",
+                "--artifacts-dir",
+                art,
+                "--report-stage",
+                "final",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        with open(result.stdout.strip()) as f:
+            written = yaml.safe_load(f)
+        assert written["report_stage"] == "final"
+        assert written["report_schema_version"] == 1
+        assert written["type"] == "rfe"
