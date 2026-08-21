@@ -606,6 +606,39 @@ class TestEntryProvenanceFields:
         assert report["results"]["errors"] == 1
         assert report["after_scores_avg"]["total"] == 0.0  # nothing scored, not a 0-score entry
 
+    def test_review_without_a_score_is_an_error_entry(self, art_dir):
+        """Non-empty but score-less frontmatter must not feed a phantom 0 into
+        the averages. Full schema validation is deliberately NOT used here —
+        the aggregator tolerates field drift across review vintages; only the
+        values it consumes are checked."""
+        self._task(art_dir, "RHAIRFE-77", status="Ready")
+        _write(
+            f"{art_dir}/rfe-reviews/RHAIRFE-77-review.md",
+            "---\nrfe_id: RHAIRFE-77\nrecommendation: submit\n---\n\nok.\n",
+        )
+
+        report = build_report(["RHAIRFE-77"], "2026-08-21T12:00:00Z")
+        entry = report["per_rfe"][0]
+
+        assert "error" in entry and "no usable score" in entry["error"]
+        assert entry["tracker_ref"] == "RHAIRFE-77"
+        assert report["after_scores_avg"]["total"] == 0.0
+        assert report["results"]["errors"] == 1
+
+    def test_non_dict_scores_do_not_crash_or_pollute(self, art_dir):
+        self._task(art_dir, "RHAIRFE-78", status="Ready")
+        _write(
+            f"{art_dir}/rfe-reviews/RHAIRFE-78-review.md",
+            "---\nrfe_id: RHAIRFE-78\nscore: 9\npass: true\nrecommendation: submit\n"
+            "feasibility: feasible\nauto_revised: false\nneeds_attention: false\n"
+            "scores: what happened here\n---\n\nok.\n",
+        )
+
+        report = build_report(["RHAIRFE-78"], "2026-08-21T12:00:00Z")
+
+        assert report["per_rfe"][0]["after_score"] == 9
+        assert report["after_scores_avg"]["what"] == 0.0
+
     def test_missing_task_file_omits_role(self, art_dir):
         """Absent means not determined — never guessed."""
         self._review(art_dir, "RHAIRFE-1234")

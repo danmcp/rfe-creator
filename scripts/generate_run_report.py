@@ -169,6 +169,14 @@ def build_report(
             # and recommendation 'revise', silently dragging the averages.
             if not isinstance(data, dict) or not data:
                 raise ValueError("review frontmatter is missing, empty or not a mapping")
+            # Deliberately narrower than full schema validation: an aggregator
+            # has to tolerate field drift across review vintages (historical
+            # re-scoring), but a review whose score is not an integer would
+            # feed a phantom value into every average. Note error stubs are
+            # written schema-complete with score=0, so they pass and count as
+            # failed — which is their design.
+            if not isinstance(data.get("score"), int) or isinstance(data.get("score"), bool):
+                raise ValueError(f"review has no usable score (got {data.get('score')!r})")
         except Exception as e:
             per_item.append({"id": item_id, "tracker_ref": tracker_ref, "error": str(e)})
             counts["errors"] += 1
@@ -219,14 +227,16 @@ def build_report(
         else:
             entry["revision_cycles"] = 0
 
-        scores = data.get("scores") or {}
-        for f in score_fields:
-            if f in scores:
-                after_totals[f].append(scores[f])
-        before_scores = data.get("before_scores") or {}
-        for f in score_fields:
-            if f in before_scores:
-                before_totals[f].append(before_scores[f])
+        scores = data.get("scores")
+        if isinstance(scores, dict):
+            for f in score_fields:
+                if f in scores:
+                    after_totals[f].append(scores[f])
+        before_scores = data.get("before_scores")
+        if isinstance(before_scores, dict):
+            for f in score_fields:
+                if f in before_scores:
+                    before_totals[f].append(before_scores[f])
 
         kids = children_map.get(item_id)
         if kids:
