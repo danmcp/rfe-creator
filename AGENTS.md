@@ -59,6 +59,12 @@ python3 scripts/frontmatter.py read <path>
 python3 scripts/frontmatter.py rebuild-index
 ```
 
+Invoke `scripts/*.py` by the relative path exactly as written above, even when
+the working directory is given to you as an absolute path. The headless
+permission allowlist matches command text literally, so expanding
+`scripts/frontmatter.py` to `/abs/path/to/scripts/frontmatter.py` is denied and
+costs a retry.
+
 ### State Persistence
 
 Long-running skills use `scripts/state.py` to persist state to `tmp/` files so it survives context compression. All skills must use this utility instead of inline bash commands (cat, echo, mkdir) to avoid unnecessary auth prompts.

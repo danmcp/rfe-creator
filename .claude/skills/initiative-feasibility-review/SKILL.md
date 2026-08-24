@@ -26,7 +26,7 @@ If the Read on `LATEST_VERSION` returns an error (file not found) or the PLATFOR
 
 ## Architecture Context Overlays
 
-Check for overlay files in `.context/architecture-context/overlays/`. If the directory exists, read all `*.md` files (excluding `README.md`) with `status: active` in their frontmatter. These are human-authored corrections to the generated architecture docs — version bumps, maturity changes, dependency shifts.
+Check for overlay files with the Glob tool: `.context/architecture-context/overlays/*.md`. Read each match except `README.md` and keep the ones with `status: active` in their frontmatter. Frontmatter can run to 40 lines and keeps growing, so pass `limit: 60` to Read for this filtering pass rather than loading whole files. Use Glob and Read for this, never a Bash glob or `for` loop — shell globs and loops are not on the headless Bash allowlist, so a loop costs a denied turn and then falls back to Read anyway. These overlays are human-authored corrections to the generated architecture docs — version bumps, maturity changes, dependency shifts.
 
 Filter for relevant overlays:
 1. **Status**: `status` must be `active` (ignore `superseded`)
@@ -53,7 +53,7 @@ If `artifacts/initiative-review-report.md` exists, read it. This is a re-review 
 
 ## Output
 
-Write your assessment to `artifacts/initiative-reviews/{ID}-feasibility.md` where `{ID}` is exactly the Initiative ID passed to you (e.g., `INIT-001` or `RHOAIENG-12345`). Create the directory if needed.
+Write your assessment to `artifacts/initiative-reviews/{ID}-feasibility.md` where `{ID}` is exactly the Initiative ID passed to you (e.g., `INIT-001` or `RHOAIENG-12345`). The Write tool creates parent directories on its own — do not run `mkdir` first.
 
 ```
 ### {ID}: <title>

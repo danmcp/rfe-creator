@@ -17,11 +17,11 @@ If `artifacts/strat-reviews/` exists and contains review files for the strategie
 
 ## Architecture Context
 
-Check for architecture context in `.context/architecture-context/architecture/`. If a `rhoai-*` directory exists, read `PLATFORM.md` and relevant component docs to ground your assessment.
+Read `.context/architecture-context/LATEST_VERSION` directly with the Read tool to get the version directory name (e.g., `rhoai-3.4-ea.2`). Do NOT use Glob or Bash to check existence first — just Read it. Then Read `.context/architecture-context/architecture/<version>/PLATFORM.md` and relevant component docs to ground your assessment. If either Read fails, assess based on the strategy content alone and state that architecture context was not available.
 
 ## Architecture Context Overlays
 
-Check for overlay files in `.context/architecture-context/overlays/`. If the directory exists, read all `*.md` files (excluding `README.md`) with `status: active` in their frontmatter. These are human-authored corrections to the generated architecture docs — version bumps, maturity changes, dependency shifts.
+Check for overlay files with the Glob tool: `.context/architecture-context/overlays/*.md`. Read each match except `README.md` and keep the ones with `status: active` in their frontmatter. Frontmatter can run to 40 lines and keeps growing, so pass `limit: 60` to Read for this filtering pass rather than loading whole files. Use Glob and Read for this, never a Bash glob or `for` loop — shell globs and loops are not on the headless Bash allowlist, so a loop costs a denied turn and then falls back to Read anyway. These overlays are human-authored corrections to the generated architecture docs — version bumps, maturity changes, dependency shifts.
 
 Filter for relevant overlays:
 1. **Status**: `status` must be `active` (ignore `superseded`)

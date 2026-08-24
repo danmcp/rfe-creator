@@ -17,16 +17,16 @@ If `artifacts/strat-reviews/` exists and contains review files for the strategie
 
 ## Architecture Context
 
-Check for architecture context in `.context/architecture-context/architecture/`. If a `rhoai-*` directory exists, read `PLATFORM.md` and the component docs relevant to each strategy.
+Read `.context/architecture-context/LATEST_VERSION` directly with the Read tool to get the version directory name (e.g., `rhoai-3.4-ea.2`). Do NOT use Glob or Bash to check existence first — just Read it; if the file is missing, Read returns an error, which is the fallback condition below. Then Read `.context/architecture-context/architecture/<version>/PLATFORM.md` and the component docs relevant to each strategy. Use these to ground the architecture assessment in the actual platform.
 
-If architecture context is not available, skip this review and output:
+If the Read on `LATEST_VERSION` returns an error (file not found) or the PLATFORM.md read fails, skip this review and output:
 ```
 Architecture review skipped — no architecture context available.
 ```
 
 ## Architecture Context Overlays
 
-Check for overlay files in `.context/architecture-context/overlays/`. If the directory exists, read all `*.md` files (excluding `README.md`) with `status: active` in their frontmatter. These are human-authored corrections to the generated architecture docs — version bumps, maturity changes, dependency shifts.
+Check for overlay files with the Glob tool: `.context/architecture-context/overlays/*.md`. Read each match except `README.md` in full and keep the ones with `status: active` in their frontmatter — this skill filters on status alone, so a frontmatter-only pre-pass saves nothing, and the correction lives in the body's `## Fact` and `## Impact on Strategies` sections anyway. Use Glob and Read for this, never a Bash glob or `for` loop — shell globs and loops are not on the headless Bash allowlist, so a loop costs a denied turn and then falls back to Read anyway. These overlays are human-authored corrections to the generated architecture docs — version bumps, maturity changes, dependency shifts.
 
 When reviewing a strategy's architecture claims, check whether any active overlay corrects or updates the information the strategy references. If a strategy uses outdated information that an overlay corrects (e.g., references KFP SDK 2.15 when an overlay says 2.16), flag it as a finding. Overlays take precedence over the generated architecture docs when they conflict.
 
