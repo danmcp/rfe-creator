@@ -320,12 +320,17 @@ Re-read flags (in case context was compressed):
 python3 scripts/state.py read tmp/initiative-review-config.yaml
 ```
 
-**If `headless: true`**: Output the text "initiative-review step completed." then run:
+**If `headless: true`**: Output the text "initiative-review step completed." then run each of these as its own Bash call — never chain them with `;` (chained commands are denied in headless mode):
 
 ```bash
 python3 scripts/state.py read tmp/initiative-review-config.yaml
-python3 scripts/state.py read tmp/initiative-split-config.yaml 2>/dev/null; true
 ```
+
+```bash
+python3 scripts/state.py read tmp/initiative-split-config.yaml
+```
+
+A "State file not found" error just means that caller's config does not exist — continue with what was found.
 
 Check the `caller` field above:
 - **`split`**: Returning to **Split Step 3: Right-sizing Self-Correction** of `/initiative-split`. Re-read parent IDs from `tmp/initiative-split-all-ids.txt`. If the split config is not visible, re-read `/initiative-split` SKILL.md for the full flow.

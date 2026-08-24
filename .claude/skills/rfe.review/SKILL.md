@@ -299,12 +299,21 @@ Re-read flags (in case context was compressed):
 python3 scripts/state.py read tmp/review-config.yaml
 ```
 
-**If `headless: true`**: Output the text "rfe.review step completed." then run:
+**If `headless: true`**: Output the text "rfe.review step completed." then run each of these as its own Bash call — never chain them with `;` (chained commands are denied in headless mode):
 
 ```bash
 python3 scripts/state.py read tmp/review-config.yaml
-python3 scripts/state.py read tmp/autofix-config.yaml 2>/dev/null; python3 scripts/state.py read tmp/split-config.yaml 2>/dev/null; true
 ```
+
+```bash
+python3 scripts/state.py read tmp/autofix-config.yaml
+```
+
+```bash
+python3 scripts/state.py read tmp/split-config.yaml
+```
+
+A "State file not found" error just means that caller's config does not exist — continue with what was found.
 
 Check the `caller` field above:
 - **`autofix`**: Returning to **Step 3b: Collect Results** of `/rfe.auto-fix`. Re-read batch IDs from `tmp/autofix-batch-N-ids.txt` (where N = `current_batch` from `tmp/autofix-config.yaml`). If the autofix config is not visible, re-read `/rfe.auto-fix` SKILL.md for the full batch loop.
