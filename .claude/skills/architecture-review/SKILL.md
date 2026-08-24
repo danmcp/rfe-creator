@@ -26,9 +26,16 @@ Architecture review skipped — no architecture context available.
 
 ## Architecture Context Overlays
 
-Check for overlay files with the Glob tool: `.context/architecture-context/overlays/*.md`. Read each match except `README.md` in full and keep the ones with `status: active` in their frontmatter — this skill filters on status alone, so a frontmatter-only pre-pass saves nothing, and the correction lives in the body's `## Fact` and `## Impact on Strategies` sections anyway. Use Glob and Read for this, never a Bash glob or `for` loop — shell globs and loops are not on the headless Bash allowlist, so a loop costs a denied turn and then falls back to Read anyway. These overlays are human-authored corrections to the generated architecture docs — version bumps, maturity changes, dependency shifts.
+Check for overlay files with the Glob tool: `.context/architecture-context/overlays/*.md`. Read each match except `README.md` and keep the ones with `status: active` in their frontmatter. Frontmatter can run to 40 lines and keeps growing, so pass `limit: 60` to Read for this filtering pass rather than loading whole files. Use Glob and Read for this, never a Bash glob or `for` loop — shell globs and loops are not on the headless Bash allowlist, so a loop costs a denied turn and then falls back to Read anyway. These overlays are human-authored corrections to the generated architecture docs — version bumps, maturity changes, dependency shifts.
 
-When reviewing a strategy's architecture claims, check whether any active overlay corrects or updates the information the strategy references. If a strategy uses outdated information that an overlay corrects (e.g., references KFP SDK 2.15 when an overlay says 2.16), flag it as a finding. Overlays take precedence over the generated architecture docs when they conflict.
+Filter for relevant overlays:
+1. **Status**: `status` must be `active` (ignore `superseded`)
+2. **Release**: `release` list must contain the target RHOAI release or `"all"`
+3. **Component match**: `affects` list must intersect with the components the strategy touches. Overlays with `affects: [platform]` match all strategies.
+
+For each matched overlay, read its `## Fact` and `## Impact on Strategies` sections. Use these to correct or supplement the architecture docs when reviewing architecture claims. Overlays take precedence over the generated architecture docs when they conflict.
+
+When reviewing a strategy's architecture claims, check whether any matched overlay corrects or updates the information the strategy references. If a strategy uses outdated information that an overlay corrects (e.g., references KFP SDK 2.15 when an overlay says 2.16), flag it as a finding.
 
 When overlays are applied, print which ones were used:
 
@@ -36,6 +43,8 @@ When overlays are applied, print which ones were used:
 Overlays applied:
 - 0001: KFP SDK updated to 2.16 in RHOAI 3.4
 ```
+
+If no overlays directory exists or no overlays match, proceed without them.
 
 ## What to Assess
 
