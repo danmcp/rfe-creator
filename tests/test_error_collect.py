@@ -110,6 +110,28 @@ def _rfe_task(workspace, item_id, **extra):
     )
 
 
+class TestNoErrorsClearsRetryFile:
+    """The early return must not leave a stale retry file behind.
+
+    The ERROR_COLLECT transition reads tmp/pipeline-retry-ids.txt to choose
+    between a retry batch and REPORT; a leftover non-empty file from an
+    earlier cycle would start a retry for IDs that are no longer erroring
+    (RHAIFIRST-581)."""
+
+    def test_stale_retry_ids_cleared_when_nothing_errors(self, workspace):
+        _rfe_task(workspace, "RHAIRFE-1")
+        _write_review(workspace, "rfe-reviews", "RHAIRFE-1", "rfe_id", None)
+        _set_ids(workspace, "RHAIRFE-1")
+        _write_raw(str(workspace / "tmp" / "pipeline-retry-ids.txt"), "RHAIRFE-999\n")
+
+        stdout, stderr, rc = _run(workspace)
+
+        assert rc == 0, stderr
+        assert "no error IDs found" in stdout
+        with open(workspace / "tmp" / "pipeline-retry-ids.txt") as f:
+            assert f.read().strip() == ""
+
+
 class TestSplitErrorCleanup:
     """The --type must reach cleanup_partial_split, or children are orphaned."""
 

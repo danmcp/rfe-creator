@@ -95,6 +95,11 @@ def main():
             if val:
                 error_ids = [x.strip() for x in val.split(",") if x.strip()]
     if not error_ids:
+        # Clear the retry file rather than leaving whatever a previous cycle
+        # wrote — the ERROR_COLLECT transition reads it to decide between a
+        # retry batch and going straight to REPORT, and a stale non-empty
+        # file would start a retry for IDs that are no longer erroring.
+        _write_ids(RETRY_IDS_FILE, [])
         print("ERROR_COLLECT: no error IDs found")
         return
 

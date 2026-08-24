@@ -521,6 +521,43 @@ class TestSplitCollect:
 # ---------- BATCH_DONE ----------
 
 
+class TestErrorCollectAdvance:
+    """ERROR_COLLECT with nothing retryable must terminate through REPORT.
+
+    BATCH_DONE routes here on error-classified reviews, but error_collect.py
+    re-checks and can find none worth retrying. The old unconditional
+    transition started a retry batch whose IDs file does not exist,
+    dead-ending the machine and skipping REPORT — the orchestrator had to
+    improvise `set-phase DONE` (production, 2026-08-24, RHAIFIRST-581).
+    """
+
+    def test_zero_retry_ids_goes_to_report(self, tmp_dir):
+        write_ids("tmp/pipeline-retry-ids.txt", [])
+        state = make_state(phase="ERROR_COLLECT", batch=1, total_batches=1, retry_cycle=1)
+
+        next_phase, msg = ps.advance(state)
+
+        assert next_phase == "REPORT"
+        assert "no retryable errors" in msg
+
+    def test_missing_retry_file_goes_to_report(self, tmp_dir):
+        """error_collect.py's early return historically wrote nothing at all."""
+        state = make_state(phase="ERROR_COLLECT", batch=1, total_batches=1, retry_cycle=1)
+
+        next_phase, _ = ps.advance(state)
+
+        assert next_phase == "REPORT"
+
+    def test_retry_ids_still_start_the_retry_batch(self, tmp_dir):
+        write_ids("tmp/pipeline-retry-ids.txt", ["RHAIRFE-1", "RHAIRFE-2"])
+        state = make_state(phase="ERROR_COLLECT", batch=1, total_batches=2, retry_cycle=1)
+
+        next_phase, msg = ps.advance(state)
+
+        assert next_phase == "BATCH_START"
+        assert "2 error IDs" in msg
+
+
 class TestBatchDone:
     def test_more_batches(self, tmp_dir, monkeypatch):
         write_ids("tmp/pipeline-active-ids.txt", ["A"])

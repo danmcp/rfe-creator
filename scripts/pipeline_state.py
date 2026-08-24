@@ -713,10 +713,18 @@ def advance(state, dry_run=False):
                     )
         return "REPORT", f"{summary}\nBATCH_DONE → REPORT"
 
-    # --- ERROR_COLLECT → BATCH_START ---
+    # --- ERROR_COLLECT → BATCH_START (or REPORT when nothing is retryable) ---
     if phase == "ERROR_COLLECT":
         retry_ids = _read_ids("tmp/pipeline-retry-ids.txt")
         n = len(retry_ids)
+        if n == 0:
+            # BATCH_DONE routed here on error-classified reviews, but
+            # error_collect.py found none worth retrying (the two checks can
+            # disagree — reviews change under them). Starting a retry batch
+            # with no IDs dead-ends the machine at a batch file that does not
+            # exist, and the run's report never gets generated. Observed in
+            # production 2026-08-24 (RHAIFIRST-581).
+            return ("REPORT", "ERROR_COLLECT: no retryable errors\nERROR_COLLECT → REPORT")
         batch = state.get("total_batches", 0)
         return (
             "BATCH_START",
