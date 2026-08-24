@@ -462,11 +462,6 @@ judges:
   - name: pairwise
     description: Blind A/B comparison of Initiative pipeline output quality across runs
     prompt_file: eval/config/initiative-pairwise-judge.md
-    # The pairwise judge returns A/B/tie verdicts, not a numeric score —
-    # score.py routes it past the numeric path by name, so this range is
-    # never enforced. Declared only to satisfy the loader's numeric-judge
-    # check, which cannot know that.
-    score_range: [1, 5]
 
 thresholds:
   files_exist:
