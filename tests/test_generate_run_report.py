@@ -625,6 +625,41 @@ class TestEntryProvenanceFields:
         assert report["after_scores_avg"]["total"] == 0.0
         assert report["results"]["errors"] == 1
 
+    def test_malformed_nested_score_is_an_error_entry_not_a_crash(self, art_dir):
+        """One corrupt review must become an error entry — not abort the whole
+        report via sum() raising TypeError in avg()."""
+        self._task(art_dir, "RHAIRFE-80", status="Ready")
+        _write(
+            f"{art_dir}/rfe-reviews/RHAIRFE-80-review.md",
+            "---\nrfe_id: RHAIRFE-80\nscore: 8\npass: true\nrecommendation: submit\n"
+            "feasibility: feasible\nauto_revised: false\nneeds_attention: false\n"
+            "scores:\n  what: bad\n  why: 2\n---\n\nok.\n",
+        )
+        # A healthy sibling proves the report itself survives.
+        self._task(art_dir, "RHAIRFE-81", status="Ready")
+        self._review(art_dir, "RHAIRFE-81")
+
+        report = build_report(["RHAIRFE-80", "RHAIRFE-81"], "2026-08-24T12:00:00Z")
+        by_id = {e["id"]: e for e in report["per_rfe"]}
+
+        assert "unusable scores members" in by_id["RHAIRFE-80"]["error"]
+        assert by_id["RHAIRFE-81"]["after_score"] == 9
+        assert report["after_scores_avg"]["total"] == 9.0
+
+    def test_malformed_before_score_is_an_error_entry(self, art_dir):
+        self._task(art_dir, "RHAIRFE-82", status="Ready")
+        _write(
+            f"{art_dir}/rfe-reviews/RHAIRFE-82-review.md",
+            "---\nrfe_id: RHAIRFE-82\nscore: 8\npass: true\nrecommendation: submit\n"
+            "feasibility: feasible\nauto_revised: false\nneeds_attention: false\n"
+            "before_score: seven\n---\n\nok.\n",
+        )
+
+        report = build_report(["RHAIRFE-82"], "2026-08-24T12:00:00Z")
+
+        assert "unusable before_score" in report["per_rfe"][0]["error"]
+        assert report["results"]["errors"] == 1
+
     def test_non_dict_scores_do_not_crash_or_pollute(self, art_dir):
         self._task(art_dir, "RHAIRFE-78", status="Ready")
         _write(
