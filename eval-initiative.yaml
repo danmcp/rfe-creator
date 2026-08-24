@@ -1,10 +1,10 @@
 name: initiative-speedrun
 description: End-to-end Initiative pipeline — create, review, auto-fix, split, and submit Initiatives
-skill: initiative-speedrun
 
 # Execution — how the skill processes test cases (runner-agnostic)
 execution:
   mode: batch
+  skill: initiative-speedrun
   arguments: --headless --dry-run --input batch.yaml
   timeout: 8100          # 2 hours 15 minutes
   max_budget_usd: 100.0  # Per-invocation cost cap
@@ -355,6 +355,7 @@ judges:
     description: |
       Assess the quality of produced Initiative task files against the
       rubric criteria and whether the pipeline's own scores are well-calibrated.
+    score_range: [1, 5]
     prompt: |
       You are an independent evaluator assessing the quality of an automated
       Initiative creation pipeline.
@@ -400,6 +401,7 @@ judges:
     description: |
       Assess whether auto-revisions improved the Initiative without losing content.
       Compares original (artifacts/initiative-originals/) vs revised (artifacts/initiatives/).
+    score_range: [1, 5]
     prompt: |
       You are an independent evaluator assessing the quality of automated
       Initiative revisions. The pipeline may have auto-revised some Initiatives
