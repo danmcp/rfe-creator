@@ -53,7 +53,7 @@ If `artifacts/rfe-review-report.md` exists, read it. This is a re-review after r
 
 ## Output
 
-Write your assessment to `artifacts/rfe-reviews/{ID}-feasibility.md` where `{ID}` is exactly the RFE ID passed to you (e.g., `RFE-005` or `RHAIRFE-1234`). Create the directory if needed.
+Write your assessment to `artifacts/rfe-reviews/{ID}-feasibility.md` where `{ID}` is exactly the RFE ID passed to you (e.g., `RFE-005` or `RHAIRFE-1234`). The Write tool creates parent directories on its own — do not run `mkdir` first.
 
 ```
 ### RFE-NNN: <title>
