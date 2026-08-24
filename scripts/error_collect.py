@@ -88,12 +88,34 @@ def main():
         capture_output=True,
         text=True,
     )
+    # A crashed or garbled collector must fail this phase loudly, not parse
+    # to an empty list — empty means "nothing to retry", which sends the
+    # pipeline to REPORT as if collection succeeded. Leave the retry file
+    # untouched so a later re-run of this phase starts from honest state.
+    if result.returncode != 0:
+        print(
+            f"ERROR_COLLECT: collect_recommendations failed "
+            f"(exit {result.returncode}): {result.stderr.strip()}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     error_ids = []
+    saw_marker = False
     for line in result.stdout.splitlines():
         if line.startswith("ERRORS="):
+            saw_marker = True
             val = line.split("=", 1)[1].strip()
             if val:
                 error_ids = [x.strip() for x in val.split(",") if x.strip()]
+    if not saw_marker:
+        print(
+            "ERROR_COLLECT: collect_recommendations output has no ERRORS= line "
+            f"— refusing to treat that as zero errors. stdout: {result.stdout.strip()[:200]}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     if not error_ids:
         # Clear the retry file rather than leaving whatever a previous cycle
         # wrote — the ERROR_COLLECT transition reads it to decide between a

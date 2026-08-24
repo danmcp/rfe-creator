@@ -110,6 +110,50 @@ def _rfe_task(workspace, item_id, **extra):
     )
 
 
+class TestCollectorFailureIsLoud:
+    """A crashed collector must fail the phase, not report zero errors.
+
+    Unchecked, a nonzero exit parses to an empty error list, which clears the
+    retry file and routes ERROR_COLLECT to REPORT — a collection failure
+    masquerading as a clean completion. The retry file must stay untouched so
+    a re-run of the phase starts from honest state."""
+
+    def _shadow_collector(self, workspace, body):
+        """Replace the scripts/ symlink with a dir of per-file links, then
+        shadow collect_recommendations.py with a stub."""
+        scripts_link = workspace / "scripts"
+        os.remove(scripts_link)
+        os.makedirs(scripts_link)
+        for name in os.listdir(SCRIPTS_DIR):
+            if name == "collect_recommendations.py":
+                continue
+            os.symlink(os.path.join(SCRIPTS_DIR, name), scripts_link / name)
+        with open(scripts_link / "collect_recommendations.py", "w") as f:
+            f.write(body)
+
+    def test_collector_crash_exits_nonzero_and_keeps_retry_file(self, workspace):
+        self._shadow_collector(workspace, "import sys\nsys.stderr.write('boom')\nsys.exit(2)\n")
+        _set_ids(workspace, "RHAIRFE-1")
+        _write_raw(str(workspace / "tmp" / "pipeline-retry-ids.txt"), "RHAIRFE-999\n")
+
+        _, stderr, rc = _run(workspace)
+
+        assert rc == 1
+        assert "collect_recommendations failed" in stderr
+        with open(workspace / "tmp" / "pipeline-retry-ids.txt") as f:
+            assert f.read().strip() == "RHAIRFE-999"
+
+    def test_missing_errors_marker_is_a_failure_too(self, workspace):
+        """Exit 0 with garbled stdout must not parse to 'zero errors'."""
+        self._shadow_collector(workspace, "print('SOMETHING ELSE ENTIRELY')\n")
+        _set_ids(workspace, "RHAIRFE-1")
+
+        _, stderr, rc = _run(workspace)
+
+        assert rc == 1
+        assert "no ERRORS= line" in stderr
+
+
 class TestNoErrorsClearsRetryFile:
     """The early return must not leave a stale retry file behind.
 
