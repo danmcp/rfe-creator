@@ -17,7 +17,7 @@ If `artifacts/strat-reviews/` exists and contains review files for the strategie
 
 ## Architecture Context
 
-Read `.context/architecture-context/LATEST_VERSION` directly with the Read tool to get the version directory name (e.g., `rhoai-3.4-ea.2`). Do NOT use Glob or Bash to check existence first — just Read it; if the file is missing, Read returns an error, which is the fallback condition below. Then Read `.context/architecture-context/architecture/<version>/PLATFORM.md` and the component docs relevant to each strategy.
+Read `.context/architecture-context/LATEST_VERSION` directly with the Read tool to get the version directory name (e.g., `rhoai-3.4-ea.2`). Do NOT use Glob or Bash to check existence first — just Read it; if the file is missing, Read returns an error, which is the fallback condition below. Then Read `.context/architecture-context/architecture/<version>/PLATFORM.md` and the component docs relevant to each strategy. Use these to ground the architecture assessment in the actual platform.
 
 If the Read on `LATEST_VERSION` returns an error (file not found) or the PLATFORM.md read fails, skip this review and output:
 ```
