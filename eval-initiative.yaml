@@ -317,15 +317,20 @@ judges:
 
   - name: architecture_context_used
     description: |
-      Verify that every feasibility review used architecture context.
+      Verify that every feasibility review was grounded in architecture
+      context. Primary evidence is behavioral: the subagent transcript that
+      wrote each feasibility file must show a successful Read/Grep/Glob of
+      .context/architecture-context — unless the review declares the
+      context not relevant, which Initiatives may legitimately do. Prose
+      matching is only a fallback for runs without transcript capture.
     check: |
-      import re
+      import glob, json, os, re
       files = outputs.get("files", {})
       feasibility = {k: v for k, v in files.items()
                      if k.endswith("-feasibility.md")}
       if not feasibility:
           return (False, "No feasibility files found")
-      errors = []
+      docs_dir = re.compile(r"\.context/architecture-context(?![\w.\-])")
       no_ctx_pattern = re.compile(
           r'architecture context was not available|no architecture context was available',
           re.IGNORECASE
@@ -334,16 +339,75 @@ judges:
           r'architecture context (was |is )?(not |un)relevant|no relevant architecture context|outside the scope of.*architecture context',
           re.IGNORECASE
       )
-      used = 0
+      run_dir = os.path.dirname(os.path.dirname(outputs.get("case_dir") or ""))
+      transcripts = sorted(glob.glob(os.path.join(run_dir, "subagents", "*.jsonl")))
+      basenames = {os.path.basename(f): f for f in feasibility}
+      # writer_hits[basename] = doc reads of the transcript(s) that wrote it
+      writer_hits = {}
+      for path in transcripts:
+          try:
+              with open(path, encoding="utf-8", errors="replace") as fh:
+                  raw = fh.read()
+          except OSError:
+              continue
+          mentioned = [b for b in basenames if b in raw]
+          if not mentioned:
+              continue
+          wrote = set()
+          hits = 0
+          pending = {}
+          for line in raw.splitlines():
+              try:
+                  ev = json.loads(line)
+              except ValueError:
+                  continue
+              msg = ev.get("message") if isinstance(ev, dict) else None
+              if not isinstance(msg, dict):
+                  continue
+              for b in msg.get("content") or []:
+                  if not isinstance(b, dict):
+                      continue
+                  if b.get("type") == "tool_use":
+                      tool_input = str(b.get("input", {}))
+                      if b.get("name") in ("Write", "Edit"):
+                          for base in mentioned:
+                              if base in tool_input:
+                                  wrote.add(base)
+                      if (b.get("name") in ("Read", "Grep", "Glob")
+                              and docs_dir.search(tool_input)):
+                          pending[b.get("id")] = True
+                  elif (b.get("type") == "tool_result"
+                          and b.get("tool_use_id") in pending):
+                      pending.pop(b.get("tool_use_id"))
+                      if b.get("is_error"):
+                          continue
+                      content = b.get("content")
+                      text = content if isinstance(content, str) else json.dumps(content)
+                      if len(text) >= 200:
+                          hits += 1
+          for base in wrote:
+              writer_hits[base] = max(writer_hits.get(base, 0), hits)
+      errors = []
+      evidenced = 0
       not_relevant = 0
       for fname, content in sorted(feasibility.items()):
-          if no_ctx_pattern.search(content) and not not_relevant_pattern.search(content):
-              errors.append(f"{fname}: architecture context not used")
-          elif not_relevant_pattern.search(content):
+          base = os.path.basename(fname)
+          declared_irrelevant = bool(not_relevant_pattern.search(content))
+          if base in writer_hits:
+              if writer_hits[base] > 0:
+                  evidenced += 1
+              elif declared_irrelevant:
+                  not_relevant += 1
+              else:
+                  errors.append(f"{fname}: writer subagent never read "
+                                ".context/architecture-context")
+          elif declared_irrelevant:
               not_relevant += 1
+          elif no_ctx_pattern.search(content):
+              errors.append(f"{fname}: architecture context not used")
           else:
-              used += 1
-      msg = f"{used} used architecture context"
+              evidenced += 1
+      msg = f"{evidenced} grounded"
       if not_relevant:
           msg += f", {not_relevant} not relevant (ok)"
       return (len(errors) == 0,
