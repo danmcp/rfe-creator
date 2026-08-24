@@ -26,7 +26,7 @@ If the Read on `LATEST_VERSION` returns an error (file not found) or the PLATFOR
 
 ## Architecture Context Overlays
 
-Check for overlay files with the Glob tool: `.context/architecture-context/overlays/*.md`. Read each match except `README.md` and keep the ones with `status: active` in their frontmatter. Frontmatter sits in the first few lines, so pass `limit` to Read rather than loading whole files. Use Glob and Read for this, never a Bash glob or `for` loop — Bash is denied in headless runs, so a loop costs a turn and then falls back to Read anyway. These overlays are human-authored corrections to the generated architecture docs — version bumps, maturity changes, dependency shifts.
+Check for overlay files with the Glob tool: `.context/architecture-context/overlays/*.md`. Read each match except `README.md` and keep the ones with `status: active` in their frontmatter. Frontmatter can run past 30 lines, so pass `limit: 40` to Read for this filtering pass rather than loading whole files. Use Glob and Read for this, never a Bash glob or `for` loop — shell globs and loops are not on the headless Bash allowlist, so a loop costs a denied turn and then falls back to Read anyway. These overlays are human-authored corrections to the generated architecture docs — version bumps, maturity changes, dependency shifts.
 
 Filter for relevant overlays:
 1. **Status**: `status` must be `active` (ignore `superseded`)
