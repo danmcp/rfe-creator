@@ -17,7 +17,7 @@ If `artifacts/strat-reviews/` exists and contains review files for the strategie
 
 ## Architecture Context
 
-Check for architecture context in `.context/architecture-context/architecture/`. If a `rhoai-*` directory exists, read `PLATFORM.md` and relevant component docs to ground your assessment.
+Read `.context/architecture-context/LATEST_VERSION` directly with the Read tool to get the version directory name (e.g., `rhoai-3.4-ea.2`). Do NOT use Glob or Bash to check existence first — just Read it. Then Read `.context/architecture-context/architecture/<version>/PLATFORM.md` and relevant component docs to ground your assessment. If either Read fails, assess based on the strategy content alone and state that architecture context was not available.
 
 ## Architecture Context Overlays
 
