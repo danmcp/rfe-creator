@@ -31,6 +31,8 @@ TYPE_CONFIG = {
         "id_field": "rfe_id",
         # parent_key values that mean "split from"; see split_children_map.
         "child_parent_prefixes": ("RFE-", "RHAIRFE-"),
+        "tracker_prefix": "RHAIRFE-",
+        "local_prefix": "RFE-",
     },
     "initiative": {
         "score_fields": [
@@ -47,6 +49,8 @@ TYPE_CONFIG = {
         "scan_tasks": scan_initiative_task_files,
         "id_field": "initiative_id",
         "child_parent_prefixes": ("INIT-", "RHOAIENG-"),
+        "tracker_prefix": "RHOAIENG-",
+        "local_prefix": "INIT-",
     },
 }
 
@@ -69,21 +73,34 @@ REPORT_STAGES = ("pre_submit", "final")
 SPLIT_REFUSED_PREFIX = "split_refused:"
 
 
-def split_children_map(artifacts_dir, config):
+def split_children_map(artifacts_dir, config, tasks=None):
     """Map parent ID -> child IDs for split children found in the task dir.
 
     A child declares its parent with `parent_key`. On the initiative side that
     same field also carries the RHAISTRAT Outcome link, which is a strategy
     rollup, not a split — so only same-family parents count.
 
-    `config` is a TYPE_CONFIG entry.
+    `config` is a TYPE_CONFIG entry. `tasks` lets a caller that already
+    scanned the tree reuse the rows instead of walking it again.
     """
+    if tasks is None:
+        tasks = config["scan_tasks"](artifacts_dir)
     children_map = {}
-    for _, task_data in config["scan_tasks"](artifacts_dir):
+    for _, task_data in tasks:
         parent = task_data.get("parent_key")
         if parent and parent.startswith(config["child_parent_prefixes"]):
             children_map.setdefault(parent, []).append(task_data[config["id_field"]])
     return children_map
+
+
+def _task_status_map(tasks, config):
+    """Map item id -> task frontmatter status, for role classification."""
+    return {task_data[config["id_field"]]: task_data.get("status") for _, task_data in tasks}
+
+
+def _usable_score(value):
+    """An integer that is not a bool — the only shape the aggregates accept."""
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _parse_run_id(start_time):
@@ -120,7 +137,9 @@ def build_report(
     reviews_dir = os.path.join(artifacts_dir, config["reviews_dir"])
 
     # Expand ID list to include split children discovered from task files
-    children_map = split_children_map(artifacts_dir, config)
+    tasks = list(config["scan_tasks"](artifacts_dir))
+    children_map = split_children_map(artifacts_dir, config, tasks=tasks)
+    status_map = _task_status_map(tasks, config)
     all_children = [c for kids in children_map.values() for c in kids]
     expanded_ids = list(ids) + [c for c in all_children if c not in ids]
 
@@ -137,18 +156,76 @@ def build_report(
             review_path = os.path.join(reviews_dir, f"{item_id}-review.md")
             if not os.path.exists(review_path):
                 review_path = None
+        # Error entries carry tracker_ref too — it derives from the id alone,
+        # and without it these are the only rows a consumer would still have
+        # to prefix-sniff.
+        is_tracker_id = item_id.startswith(config["tracker_prefix"])
+        tracker_ref = item_id if is_tracker_id else None
+
         if not review_path:
-            per_item.append({"id": item_id, "error": "review file not found"})
+            per_item.append(
+                {"id": item_id, "tracker_ref": tracker_ref, "error": "review file not found"}
+            )
             counts["errors"] += 1
             continue
         try:
             data, _ = read_frontmatter(review_path)
+            # read_frontmatter normalizes missing/empty/non-mapping frontmatter
+            # to {} — which would sail through as a normal entry with score 0
+            # and recommendation 'revise', silently dragging the averages.
+            if not isinstance(data, dict) or not data:
+                raise ValueError("review frontmatter is missing, empty or not a mapping")
+            # Deliberately narrower than full schema validation: an aggregator
+            # has to tolerate field drift across review vintages (historical
+            # re-scoring), but a review whose score is not an integer would
+            # feed a phantom value into every average. Note error stubs are
+            # written schema-complete with score=0, so they pass and count as
+            # failed — which is their design.
+            if not _usable_score(data.get("score")):
+                raise ValueError(f"review has no usable score (got {data.get('score')!r})")
+            # Every other numeric the aggregates consume gets the same rule: a
+            # single malformed value would otherwise reach avg()'s sum() and
+            # abort the WHOLE report over one corrupt review, instead of that
+            # review becoming an error entry.
+            if data.get("before_score") is not None and not _usable_score(data["before_score"]):
+                raise ValueError(f"review has unusable before_score ({data['before_score']!r})")
+            for field_name in ("scores", "before_scores"):
+                members = data.get(field_name)
+                if isinstance(members, dict):
+                    bad = {
+                        k: v
+                        for k, v in members.items()
+                        if k in score_fields and not _usable_score(v)
+                    }
+                    if bad:
+                        raise ValueError(f"review has unusable {field_name} members: {bad!r}")
         except Exception as e:
-            per_item.append({"id": item_id, "error": str(e)})
+            per_item.append({"id": item_id, "tracker_ref": tracker_ref, "error": str(e)})
             counts["errors"] += 1
             continue
 
         entry = {"id": item_id}
+
+        # The canonical remote reference (work-item-types-unified.md §5): the id
+        # itself once submitted, null while none exists. Consumers must never
+        # infer "is this a real ticket" from the id prefix again.
+        entry["tracker_ref"] = tracker_ref
+
+        # A local-id node that was split again is a structural stepping stone —
+        # archived, never submitted, its children re-parented at submit time by
+        # split_submit._collect_leaves. Everything else is a leaf. Absent means
+        # the task file was not found, so the role could not be determined.
+        task_status = status_map.get(item_id)
+        if task_status is not None:
+            is_local_id = item_id.startswith(config["local_prefix"])
+            entry["role"] = "intermediary" if is_local_id and task_status == "Archived" else "leaf"
+
+        # Provenance: the pre-submission id, persisted by the rename. Only
+        # meaningful once the entry id has become the Jira key.
+        local_id = data.get("local_id")
+        if local_id and local_id != item_id:
+            entry["local_id"] = local_id
+
         rec = data.get("recommendation", "revise")
         entry["recommendation"] = rec
         entry["auto_revised"] = data.get("auto_revised", False)
@@ -172,14 +249,16 @@ def build_report(
         else:
             entry["revision_cycles"] = 0
 
-        scores = data.get("scores") or {}
-        for f in score_fields:
-            if f in scores:
-                after_totals[f].append(scores[f])
-        before_scores = data.get("before_scores") or {}
-        for f in score_fields:
-            if f in before_scores:
-                before_totals[f].append(before_scores[f])
+        scores = data.get("scores")
+        if isinstance(scores, dict):
+            for f in score_fields:
+                if f in scores:
+                    after_totals[f].append(scores[f])
+        before_scores = data.get("before_scores")
+        if isinstance(before_scores, dict):
+            for f in score_fields:
+                if f in before_scores:
+                    before_totals[f].append(before_scores[f])
 
         kids = children_map.get(item_id)
         if kids:

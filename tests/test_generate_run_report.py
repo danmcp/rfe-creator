@@ -507,6 +507,184 @@ class TestRefusedSplitIsBlockedNotSplit:
         assert report["per_rfe"][0]["needs_attention"] is True
 
 
+class TestEntryProvenanceFields:
+    """tracker_ref, role and local_id — the three-mode classification per entry.
+
+    | mode          | role         | tracker_ref  |
+    |---------------|--------------|--------------|
+    | intermediary  | intermediary | null         |
+    | blocked leaf  | leaf         | null         |
+    | submitted     | leaf         | the Jira key |
+    """
+
+    def _task(self, art_dir, rfe_id, status="Ready", parent=None, extra_fm=""):
+        parent_line = f"parent_key: {parent}\n" if parent else ""
+        _write(
+            f"{art_dir}/rfe-tasks/{rfe_id}.md",
+            f"---\nrfe_id: {rfe_id}\ntitle: T\npriority: Major\n"
+            f"status: {status}\n{parent_line}{extra_fm}---\n\nBody.\n",
+        )
+
+    def _review(self, art_dir, rfe_id, extra_fm=""):
+        _write(
+            f"{art_dir}/rfe-reviews/{rfe_id}-review.md",
+            f"---\nrfe_id: {rfe_id}\nscore: 9\npass: true\nrecommendation: submit\n"
+            f"feasibility: feasible\nauto_revised: false\nneeds_attention: false\n{extra_fm}"
+            "scores:\n  what: 2\n  why: 2\n  open_to_how: 2\n  not_a_task: 2\n  right_sized: 2\n"
+            "---\n\nok.\n",
+        )
+
+    def test_submitted_entry_carries_tracker_ref_and_provenance(self, art_dir):
+        """Post-rename: id is the Jira key, local_id preserves where it came from."""
+        self._task(art_dir, "RHAIRFE-3082", status="Submitted", extra_fm="local_id: RFE-001\n")
+        self._review(art_dir, "RHAIRFE-3082", extra_fm="local_id: RFE-001\n")
+
+        report = build_report(["RHAIRFE-3082"], "2026-08-21T12:00:00Z")
+        entry = report["per_rfe"][0]
+
+        assert entry["tracker_ref"] == "RHAIRFE-3082"
+        assert entry["role"] == "leaf"
+        assert entry["local_id"] == "RFE-001"
+
+    def test_unsubmitted_local_entry_is_a_leaf_without_a_ticket(self, art_dir):
+        """Mode 1 shape: a Draft child whose split was refused."""
+        self._task(art_dir, "RFE-001", status="Draft", parent="RHAIRFE-1000")
+        self._review(art_dir, "RFE-001")
+        self._task(art_dir, "RHAIRFE-1000", status="Archived")
+        self._review(art_dir, "RHAIRFE-1000")
+
+        report = build_report(["RHAIRFE-1000"], "2026-08-21T12:00:00Z")
+        by_id = {e["id"]: e for e in report["per_rfe"]}
+
+        assert by_id["RFE-001"]["tracker_ref"] is None
+        assert by_id["RFE-001"]["role"] == "leaf"
+        assert "local_id" not in by_id["RFE-001"]
+
+    def test_archived_local_node_is_an_intermediary(self, art_dir):
+        """Mode 2: re-split stepping stone — never was and never will be a ticket."""
+        self._task(art_dir, "RHAIRFE-1000", status="Archived")
+        self._review(art_dir, "RHAIRFE-1000")
+        self._task(art_dir, "RFE-004", status="Archived", parent="RHAIRFE-1000")
+        self._review(art_dir, "RFE-004")
+        self._task(art_dir, "RFE-007", status="Ready", parent="RFE-004")
+        self._review(art_dir, "RFE-007")
+
+        report = build_report(["RHAIRFE-1000"], "2026-08-21T12:00:00Z")
+        by_id = {e["id"]: e for e in report["per_rfe"]}
+
+        assert by_id["RFE-004"]["role"] == "intermediary"
+        assert by_id["RFE-004"]["tracker_ref"] is None
+
+    def test_archived_jira_parent_is_not_an_intermediary(self, art_dir):
+        """The real split parent is also Archived — but it IS a ticket.
+
+        Classifying on Archived alone would mislabel exactly the row consumers
+        care about most; the rule requires a local id as well.
+        """
+        self._task(art_dir, "RHAIRFE-1000", status="Archived")
+        self._review(art_dir, "RHAIRFE-1000")
+
+        report = build_report(["RHAIRFE-1000"], "2026-08-21T12:00:00Z")
+        entry = report["per_rfe"][0]
+
+        assert entry["role"] == "leaf"
+        assert entry["tracker_ref"] == "RHAIRFE-1000"
+
+    def test_empty_frontmatter_review_is_an_error_entry(self, art_dir):
+        """read_frontmatter normalizes empty/non-mapping frontmatter to {} —
+        without a guard that review becomes a normal entry with score 0,
+        silently dragging the averages. Seen in the published corpus
+        (20260727-031043/RHAIRFE-2911-review.md)."""
+        self._task(art_dir, "RHAIRFE-2911", status="Ready")
+        _write(f"{art_dir}/rfe-reviews/RHAIRFE-2911-review.md", "---\n---\n\n## Feedback\n")
+
+        report = build_report(["RHAIRFE-2911"], "2026-08-21T12:00:00Z")
+        entry = report["per_rfe"][0]
+
+        assert "error" in entry
+        assert entry["tracker_ref"] == "RHAIRFE-2911"
+        assert report["results"]["errors"] == 1
+        assert report["after_scores_avg"]["total"] == 0.0  # nothing scored, not a 0-score entry
+
+    def test_review_without_a_score_is_an_error_entry(self, art_dir):
+        """Non-empty but score-less frontmatter must not feed a phantom 0 into
+        the averages. Full schema validation is deliberately NOT used here —
+        the aggregator tolerates field drift across review vintages; only the
+        values it consumes are checked."""
+        self._task(art_dir, "RHAIRFE-77", status="Ready")
+        _write(
+            f"{art_dir}/rfe-reviews/RHAIRFE-77-review.md",
+            "---\nrfe_id: RHAIRFE-77\nrecommendation: submit\n---\n\nok.\n",
+        )
+
+        report = build_report(["RHAIRFE-77"], "2026-08-21T12:00:00Z")
+        entry = report["per_rfe"][0]
+
+        assert "error" in entry and "no usable score" in entry["error"]
+        assert entry["tracker_ref"] == "RHAIRFE-77"
+        assert report["after_scores_avg"]["total"] == 0.0
+        assert report["results"]["errors"] == 1
+
+    def test_malformed_nested_score_is_an_error_entry_not_a_crash(self, art_dir):
+        """One corrupt review must become an error entry — not abort the whole
+        report via sum() raising TypeError in avg()."""
+        self._task(art_dir, "RHAIRFE-80", status="Ready")
+        _write(
+            f"{art_dir}/rfe-reviews/RHAIRFE-80-review.md",
+            "---\nrfe_id: RHAIRFE-80\nscore: 8\npass: true\nrecommendation: submit\n"
+            "feasibility: feasible\nauto_revised: false\nneeds_attention: false\n"
+            "scores:\n  what: bad\n  why: 2\n---\n\nok.\n",
+        )
+        # A healthy sibling proves the report itself survives.
+        self._task(art_dir, "RHAIRFE-81", status="Ready")
+        self._review(art_dir, "RHAIRFE-81")
+
+        report = build_report(["RHAIRFE-80", "RHAIRFE-81"], "2026-08-24T12:00:00Z")
+        by_id = {e["id"]: e for e in report["per_rfe"]}
+
+        assert "unusable scores members" in by_id["RHAIRFE-80"]["error"]
+        assert by_id["RHAIRFE-81"]["after_score"] == 9
+        assert report["after_scores_avg"]["total"] == 9.0
+
+    def test_malformed_before_score_is_an_error_entry(self, art_dir):
+        self._task(art_dir, "RHAIRFE-82", status="Ready")
+        _write(
+            f"{art_dir}/rfe-reviews/RHAIRFE-82-review.md",
+            "---\nrfe_id: RHAIRFE-82\nscore: 8\npass: true\nrecommendation: submit\n"
+            "feasibility: feasible\nauto_revised: false\nneeds_attention: false\n"
+            "before_score: seven\n---\n\nok.\n",
+        )
+
+        report = build_report(["RHAIRFE-82"], "2026-08-24T12:00:00Z")
+
+        assert "unusable before_score" in report["per_rfe"][0]["error"]
+        assert report["results"]["errors"] == 1
+
+    def test_non_dict_scores_do_not_crash_or_pollute(self, art_dir):
+        self._task(art_dir, "RHAIRFE-78", status="Ready")
+        _write(
+            f"{art_dir}/rfe-reviews/RHAIRFE-78-review.md",
+            "---\nrfe_id: RHAIRFE-78\nscore: 9\npass: true\nrecommendation: submit\n"
+            "feasibility: feasible\nauto_revised: false\nneeds_attention: false\n"
+            "scores: what happened here\n---\n\nok.\n",
+        )
+
+        report = build_report(["RHAIRFE-78"], "2026-08-21T12:00:00Z")
+
+        assert report["per_rfe"][0]["after_score"] == 9
+        assert report["after_scores_avg"]["what"] == 0.0
+
+    def test_missing_task_file_omits_role(self, art_dir):
+        """Absent means not determined — never guessed."""
+        self._review(art_dir, "RHAIRFE-1234")
+
+        report = build_report(["RHAIRFE-1234"], "2026-08-21T12:00:00Z")
+        entry = report["per_rfe"][0]
+
+        assert "role" not in entry
+        assert entry["tracker_ref"] == "RHAIRFE-1234"
+
+
 class TestReportRootMetadata:
     """Root fields that let a consumer know what it is reading."""
 
