@@ -390,6 +390,10 @@ The bootstrap snapshot accounts for:
   zero-count run), bootstrap walks back to the newest run that
   processed anything and reconstructs state as of that run — the
   empty run's newer timestamp would hide edits made between the two.
+  When every report in history is empty, bootstrap snapshots every
+  fetched issue marked unprocessed, without requiring `--include-all`:
+  the reports were read and state exactly that nothing was processed,
+  which is evidence, not absence.
   If no run report is found at all, all fetched issues are included
   as a fallback, marked unprocessed. A `report_stage: pre_submit`
   report is used but warned about: it predates that run's Jira

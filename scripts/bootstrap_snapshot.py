@@ -92,8 +92,19 @@ def _load_run_report(results_dir, run_name, config=None):
         # writer and this reader disagree about the schema, and pretending the report is absent
         # would hide exactly that.
         raise ValueError(f"run report {path} has no {item_key} item list")
+    items = report.get(item_key)
+    if not isinstance(items, list):
+        # A null or mapping-typed item list is the same writer/reader schema
+        # disagreement as a missing key — not a zero-count run. The old
+        # comprehension caught the null case as TypeError inside its try;
+        # the explicit loop must not regress it to a bare traceback, and {}
+        # must not masquerade as a legitimate empty LIST.
+        raise ValueError(
+            f"run report {path} has a non-list {item_key} value "
+            f"({type(items).__name__})"
+        )
     ids = set()
-    for entry in report.get(item_key, []):
+    for entry in items:
         if not isinstance(entry, dict):
             raise ValueError(
                 f"run report {path} has malformed {item_key} entries: "

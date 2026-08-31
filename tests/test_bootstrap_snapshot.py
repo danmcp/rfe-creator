@@ -1477,6 +1477,22 @@ class TestLoadRunReportRejectsCorruptFiles:
         assert ids == set()
         assert isinstance(report, dict)
 
+    def test_null_item_list_raises(self, tmp_path):
+        """per_rfe: null is schema drift, not a zero-count run — and it must
+        raise the documented ValueError, not escape as a bare TypeError."""
+        results, run = self._write_report(tmp_path, "per_rfe: null\n")
+
+        with pytest.raises(ValueError, match="non-list"):
+            _load_run_report(results, run)
+
+    def test_mapping_item_list_raises(self, tmp_path):
+        """per_rfe: {} iterates like an empty list — it must not masquerade
+        as a legitimate zero-count run and trigger the walk-back."""
+        results, run = self._write_report(tmp_path, "per_rfe: {}\n")
+
+        with pytest.raises(ValueError, match="non-list"):
+            _load_run_report(results, run)
+
     def test_non_dict_entry_raises_even_containing_error(self, tmp_path):
         """A malformed entry must refuse loudly — the error-entry skip is for
         error DICTS, not for anything whose text happens to contain 'error'."""
