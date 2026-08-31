@@ -113,7 +113,10 @@ def _load_run_report(results_dir, run_name, config=None):
             continue
         try:
             ids.add(entry["id"])
-        except KeyError as e:
+        except (KeyError, TypeError) as e:
+            # TypeError included: an unhashable id ({} / []) must follow the
+            # same malformed-report path as a missing one, not escape as a
+            # traceback past main's ValueError handling.
             raise ValueError(f"run report {path} has malformed {item_key} entries: {e}") from e
     return ids, report
 
@@ -129,7 +132,13 @@ def _older_run_names(results_dir, run_name):
     for name in sorted(os.listdir(results_dir), reverse=True):
         if name.startswith(".") or name in ("latest", "test-data"):
             continue
-        if not os.path.isdir(os.path.join(results_dir, name)):
+        path = os.path.join(results_dir, name)
+        # isdir follows symlinks: a planted timestamp-named symlink would
+        # otherwise route the walk-back into a report OUTSIDE results_dir
+        # and let it rewrite the processed-ID filter (CWE-59). `latest` is
+        # the one symlink this layout legitimately contains, and it is
+        # already excluded by name above.
+        if os.path.islink(path) or not os.path.isdir(path):
             continue
         try:
             datetime.strptime(name, "%Y%m%d-%H%M%S")

@@ -1217,6 +1217,34 @@ class TestBootstrapIntegration:
             snap = yaml.safe_load(f)
         assert set(snap["issues"]) == {"RHOAIENG-1"}
 
+    def test_walk_back_ignores_symlinked_run_dirs(self, tmp_path, mock_jira):
+        """A timestamp-named symlink must not route the walk-back to a report
+        outside results_dir (CWE-59) — the filter would be attacker-chosen."""
+        url, server = mock_jira
+        server.issues = {"RHAIRFE-1": "Issue one.", "RHAIRFE-2": "Issue two."}
+        results = _make_results_dir(
+            tmp_path,
+            ["20260330-100000", "20260401-120000"],
+            latest="20260401-120000",
+            reports={"20260330-100000": ["RHAIRFE-1"], "20260401-120000": []},
+        )
+        # Outside dir with a newer-stamped report claiming a different filter.
+        outside = tmp_path / "outside" / "20260331-110000"
+        _write(
+            str(outside / "auto-fix-runs" / "20260331-110000.yaml"),
+            yaml.dump({"per_rfe": [{"id": "RHAIRFE-2", "recommendation": "submit"}]}),
+        )
+        os.symlink(str(outside), os.path.join(results, "20260331-110000"))
+        art_dir = str(tmp_path / "artifacts")
+        os.makedirs(art_dir)
+
+        r = self._run_bootstrap(results, art_dir, url)
+        assert r.returncode == 0, r.stderr
+        # The symlinked dir is skipped; the walk lands on the real older run.
+        assert "walking back to 20260330-100000" in r.stderr
+        _, snap = self._load_snapshot(art_dir)
+        assert set(snap["issues"]) == {"RHAIRFE-1"}
+
     def test_pre_submit_report_warns(self, tmp_path, mock_jira):
         """A pre_submit tip predates that run's Jira writes — one warning
         naming the consequence (RHAIFIRST-569 item 2)."""
@@ -1491,6 +1519,14 @@ class TestLoadRunReportRejectsCorruptFiles:
         results, run = self._write_report(tmp_path, "per_rfe: {}\n")
 
         with pytest.raises(ValueError, match="non-list"):
+            _load_run_report(results, run)
+
+    def test_unhashable_id_raises_value_error(self, tmp_path):
+        """id: {} must follow the malformed-report path, not escape as a
+        TypeError traceback past main's ValueError handling."""
+        results, run = self._write_report(tmp_path, "per_rfe:\n- id: {}\n")
+
+        with pytest.raises(ValueError, match="malformed"):
             _load_run_report(results, run)
 
     def test_non_dict_entry_raises_even_containing_error(self, tmp_path):
