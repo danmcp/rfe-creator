@@ -133,6 +133,25 @@ class TestCmdFetchFirstRun:
         assert set(_read_ids(args.ids_file)) == {"RHAIRFE-1", "RHAIRFE-2"}
         assert _read_ids(args.changed_file) == []
 
+    def test_quarantined_parent_excluded(self, work_dirs, jira, monkeypatch, tmp_path):
+        """The split-quarantine label parks a partially-split parent: the
+        hard filter must exclude it from selection until a human clears the
+        label (RHAIFIRST-570)."""
+        jira.create("RHAIRFE-1", "Issue one", "Description one.")
+        jira.create(
+            "RHAIRFE-2",
+            "Failed split parent",
+            "Description two.",
+            labels=["rfe-creator-split-quarantine"],
+        )
+        _jira_env(monkeypatch, jira.url)
+        args = _fetch_args(tmp_path)
+
+        stdout = _run_fetch(args)
+
+        assert "TOTAL=1" in stdout
+        assert set(_read_ids(args.ids_file)) == {"RHAIRFE-1"}
+
     def test_snapshot_written(self, work_dirs, jira, monkeypatch, tmp_path):
         """Fetch writes snapshot directly to artifacts with hashes."""
         jira.create("RHAIRFE-1", "Issue one", "Content.")

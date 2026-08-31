@@ -213,13 +213,21 @@ def _generate_reports(args):
         print(f"Warning: HTML report generation failed: {result.stderr}", file=sys.stderr)
 
 
-def _record_split_failure(server, user, token, parent_key, reason, error, args, cfg, parent_data):
+def _record_split_failure(
+    server, user, token, parent_key, reason, error, args, cfg, parent_data, quarantine=False
+):
     """Record a split that did not complete: review frontmatter, then Jira comment and label.
 
     Both halves are best-effort on purpose. The point of recording is to survive a failure, and
     an unguarded write here would replace the diagnosis with a traceback — the Jira calls raise
     under the failures most worth recording (expired token, unreachable instance), and the local
     write raises on a corrupt or read-only review file.
+
+    quarantine=True additionally labels the parent {label_prefix}-split-quarantine, which the
+    fetch hard filters exclude — a partially-applied split must not be silently re-attempted
+    by the nightly (each retry can mint duplicate children) until a human removes the label
+    (RHAIFIRST-570). Refusals stay un-quarantined: nothing was created, and a re-attempt after
+    the backlog changes is cheap and safe.
     """
     review_path = _find_review(args.artifacts_dir, parent_key, cfg)
     if review_path:
@@ -245,7 +253,10 @@ def _record_split_failure(server, user, token, parent_key, reason, error, args, 
             server, user, token, entry, {parent_key: parent_key}, args.dry_run, cfg
         )
         if not args.dry_run:
-            add_labels(server, user, token, parent_key, [f"{cfg['label_prefix']}-needs-attention"])
+            flag_labels = [f"{cfg['label_prefix']}-needs-attention"]
+            if quarantine:
+                flag_labels.append(f"{cfg['label_prefix']}-split-quarantine")
+            add_labels(server, user, token, parent_key, flag_labels)
     except Exception as e:
         print(
             f"  Warning: could not flag {parent_key} in Jira ({e}). Recorded locally.",
@@ -475,6 +486,7 @@ def main():
                     args,
                     cfg,
                     split_parent_data[parent_key],
+                    quarantine=True,
                 )
                 submit_errors.append(
                     (parent_key, f"split_submit exit {result.returncode} (may be partial)")

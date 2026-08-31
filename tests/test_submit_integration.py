@@ -717,6 +717,77 @@ class TestSnapshotUpdate:
         assert data["issues"] == {"RHAIRFE-1234": "existing"}
 
 
+class TestSplitQuarantine:
+    """A parent whose split failed partway must not be silently re-attempted
+    by the nightly (RHAIFIRST-570): submit.py labels it split-quarantine,
+    which the fetch hard filters exclude until a human removes it."""
+
+    PARENT_TASK = (
+        "---\nrfe_id: RHAIRFE-1000\ntitle: Parent RFE\n"
+        "priority: Major\nstatus: Archived\n---\n\nOriginal content.\n"
+    )
+    PARENT_REVIEW = (
+        "---\nrfe_id: RHAIRFE-1000\nscore: 6\npass: false\n"
+        "recommendation: split\nfeasibility: feasible\n"
+        "auto_revised: false\nneeds_attention: false\n"
+        "scores:\n  what: 2\n  why: 1\n  open_to_how: 2\n"
+        "  not_a_task: 1\n  right_sized: 0\n---\n\nToo big.\n"
+    )
+
+    def _labels(self, jira, key):
+        issue = None
+        import urllib.request as _rq
+
+        req = _rq.Request(f"{jira.url}/rest/api/3/issue/{key}?fields=labels")
+        with _rq.urlopen(req) as resp:
+            issue = json.loads(resp.read())
+        return set(issue["fields"].get("labels", []))
+
+    def test_generic_split_failure_quarantines_the_parent(self, art_dir, jira):
+        """An archived intermediary child with no leaves: submit detects the
+        split parent, but split_submit collects zero leaf children and exits
+        1 — the generic, possibly-partially-applied class."""
+        jira.create("RHAIRFE-1000", "Parent RFE", "Original content.")
+        _write(f"{art_dir}/rfe-originals/RHAIRFE-1000.md", "Original content.")
+        _write(f"{art_dir}/rfe-tasks/RHAIRFE-1000.md", self.PARENT_TASK)
+        _write(f"{art_dir}/rfe-reviews/RHAIRFE-1000-review.md", self.PARENT_REVIEW)
+        _write(
+            f"{art_dir}/rfe-tasks/RFE-001.md",
+            "---\nrfe_id: RFE-001\ntitle: Dead-end intermediary\n"
+            "priority: Major\nstatus: Archived\n"
+            "parent_key: RHAIRFE-1000\n---\n\nChild content.\n",
+        )
+
+        r = _run_submit(art_dir, jira.url)
+        assert r.returncode == 1
+
+        labels = self._labels(jira, "RHAIRFE-1000")
+        assert "rfe-creator-split-quarantine" in labels, r.stdout + r.stderr
+        assert "rfe-creator-needs-attention" in labels
+
+    def test_refusal_is_not_quarantined(self, art_dir, jira):
+        """The leaf-cap refusal created nothing in Jira: flagged for a human,
+        but a later re-attempt is cheap and safe — no quarantine."""
+        jira.create("RHAIRFE-1000", "Parent RFE", "Original content.")
+        _write(f"{art_dir}/rfe-originals/RHAIRFE-1000.md", "Original content.")
+        _write(f"{art_dir}/rfe-tasks/RHAIRFE-1000.md", self.PARENT_TASK)
+        _write(f"{art_dir}/rfe-reviews/RHAIRFE-1000-review.md", self.PARENT_REVIEW)
+        for n in range(1, 9):  # 8 children > MAX_LEAF_CHILDREN
+            _write(
+                f"{art_dir}/rfe-tasks/RFE-{n:03d}.md",
+                f"---\nrfe_id: RFE-{n:03d}\ntitle: Child {n}\n"
+                "priority: Major\nstatus: Ready\n"
+                "parent_key: RHAIRFE-1000\n---\n\nChild content.\n",
+            )
+
+        r = _run_submit(art_dir, jira.url)
+        assert r.returncode == 0, r.stderr
+
+        labels = self._labels(jira, "RHAIRFE-1000")
+        assert "rfe-creator-split-quarantine" not in labels
+        assert "rfe-creator-needs-attention" in labels
+
+
 class TestSplitConflictDetection:
     """Integration test: split_submit.py detects parent conflict."""
 

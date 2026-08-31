@@ -53,6 +53,7 @@ from jira_utils import (  # noqa: E402
     get_transitions,
     markdown_to_adf,
     require_env,
+    search_issues,
     text_to_adf_paragraph,
 )
 
@@ -134,12 +135,29 @@ def _extract_adf_text(node):
     return _extract_adf_text(node.get("content", []))
 
 
+def _child_marker_label(label_prefix, child_id):
+    """Deterministic per-child label applied at creation.
+
+    This is the recovery signal that exists from the instant the child does:
+    a process death between create_issue and the link/comment used to mint a
+    ticket no future run could find (RHAIFIRST-570). The label also carries
+    the child's local id, so recovery maps by identity instead of position —
+    adding, removing or renaming a sibling between runs cannot misalign it.
+    """
+    return f"{label_prefix}-split-child-{child_id.lower()}"
+
+
 class SubmissionState:
-    """Tracks progress of the split submission."""
+    """Tracks progress of the split submission, keyed by child local id.
+
+    phase2_done values are dicts {"key", "linked", "commented"} so recovery
+    can finish a partially-applied child (created but never linked, or linked
+    but never confirmed) instead of only skipping fully-done ones.
+    """
 
     def __init__(self):
-        self.phase1_done = {}  # child_index -> comment ID
-        self.phase2_done = {}  # child_index -> created Jira key
+        self.phase1_done = {}  # child_id -> comment ID
+        self.phase2_done = {}  # child_id -> {"key", "linked", "commented"}
         self.parent_closed = False
         self.total_children = 0
         self.parent_components = []  # inherited by children
@@ -149,30 +167,70 @@ class SubmissionState:
 
 
 def discover_state(server, user, token, parent_key, expected_children, config):
-    """Scan parent's comments and links to determine submission progress."""
+    """Determine submission progress from Jira: comments, links, marker labels.
+
+    Recovery is id-based: every signal maps to the child's LOCAL id, never to
+    its position in the children list — sibling changes between runs used to
+    re-number positional indices and silently misalign recovery. Legacy
+    positional comments (written before RHAIFIRST-570) are still understood,
+    mapped through the current ordering as a best effort.
+
+    Signal precedence per child: confirmation comment (implies created,
+    linked and confirmed — the comment is posted last), then a `Work item
+    split` link (created and linked, confirmation lost), then the per-child
+    marker label (created only — the death-after-create window). Later
+    signals never overwrite earlier ones.
+    """
     state = SubmissionState()
     state.total_children = len(expected_children)
     marker = re.escape(config["comment_marker"])
+    ids_in_order = [child_id for (child_id, _, _, _) in expected_children]
+    id_by_title = {title: child_id for (child_id, title, _, _) in expected_children}
 
-    # 1. Scan comments for comment markers
+    def _id_at(idx):
+        """Map a legacy positional index to a child id, best effort."""
+        return ids_in_order[idx - 1] if 1 <= idx <= len(ids_in_order) else None
+
+    # 1. Scan comments for comment markers (new id-based format first,
+    #    legacy positional format second — the formats are disjoint).
     comments = get_comments(server, user, token, parent_key)
     for comment in comments:
         body_text = _extract_adf_text(comment.get("body", {}))
 
-        archival_match = re.search(rf"{marker} Split child (\d+) of (\d+):", body_text)
+        archival_match = re.search(
+            rf"{marker} Split child (\S+) \(\d+ of \d+\):", body_text
+        ) or re.search(rf"{marker} Split child (\d+) of \d+:", body_text)
         if archival_match:
-            idx = int(archival_match.group(1))
-            state.phase1_done[idx] = comment["id"]
+            ref = archival_match.group(1)
+            child_id = _id_at(int(ref)) if ref.isdigit() else ref
+            if child_id:
+                state.phase1_done[child_id] = comment["id"]
             continue
 
         confirm_match = re.search(
+            rf"{marker} Created as (\S+) for (\S+), linked to parent", body_text
+        )
+        if confirm_match:
+            created_key, child_id = confirm_match.group(1), confirm_match.group(2)
+            state.phase2_done[child_id] = {
+                "key": created_key,
+                "linked": True,
+                "commented": True,
+            }
+            continue
+
+        legacy_confirm = re.search(
             rf"{marker} Created as (\S+),.*\(ref: child (\d+) of (\d+)\)",
             body_text,
         )
-        if confirm_match:
-            created_key = confirm_match.group(1)
-            idx = int(confirm_match.group(2))
-            state.phase2_done[idx] = created_key
+        if legacy_confirm:
+            child_id = _id_at(int(legacy_confirm.group(2)))
+            if child_id and child_id not in state.phase2_done:
+                state.phase2_done[child_id] = {
+                    "key": legacy_confirm.group(1),
+                    "linked": True,
+                    "commented": True,
+                }
             continue
 
     # 2. Check issue links, components, labels, and Jira parent
@@ -186,14 +244,62 @@ def discover_state(server, user, token, parent_key, expected_children, config):
     for link in issue.get("fields", {}).get("issuelinks", []):
         if link.get("type", {}).get("name") != "Work item split":
             continue
-        outward = link.get("outwardIssue")
-        if not outward:
+        # Real Jira renders the child as outwardIssue on the parent; the
+        # jira-emulator renders it as inwardIssue. Check both ends — the
+        # title guard keeps a parent that is itself a split child (its own
+        # inward link points at ITS parent) from matching here.
+        other = link.get("outwardIssue") or link.get("inwardIssue")
+        if not other:
             continue
-        child_key = outward["key"]
-        child_summary = outward.get("fields", {}).get("summary", "")
-        for idx, (_, title, _, _) in enumerate(expected_children, 1):
-            if title == child_summary and idx not in state.phase2_done:
-                state.phase2_done[idx] = child_key
+        child_key = other["key"]
+        child_summary = other.get("fields", {}).get("summary", "")
+        child_id = id_by_title.get(child_summary)
+        if child_id and child_id not in state.phase2_done:
+            state.phase2_done[child_id] = {
+                "key": child_key,
+                "linked": True,
+                "commented": False,
+            }
+
+    # 2b. Marker-label search: the only signal that exists from the instant
+    #     the child does. Finds children whose creating process died before
+    #     the link and the comment — previously undiscoverable, so the next
+    #     run minted a duplicate (RHAIFIRST-570).
+    label_prefix = config["label_prefix"]
+    unmapped = [cid for cid in ids_in_order if cid not in state.phase2_done]
+    if unmapped:
+        markers = [_child_marker_label(label_prefix, cid) for cid in unmapped]
+        marker_by_label = dict(zip(markers, unmapped))
+        jql = f"labels in ({', '.join(markers)})"
+        try:
+            found = search_issues(server, user, token, jql, "labels,issuelinks")
+        except Exception as e:
+            # Best-effort net: a search failure must not turn recovery into
+            # an abort — the comment and link signals above still stand.
+            print(f"  Warning: marker-label search failed: {e}", file=sys.stderr)
+            found = []
+        for hit in found:
+            hit_labels = hit.get("fields", {}).get("labels", [])
+            hit_ids = [marker_by_label[m] for m in hit_labels if m in marker_by_label]
+            if len(hit_ids) != 1:
+                continue
+            child_id = hit_ids[0]
+            if child_id in state.phase2_done:
+                continue
+            linked = any(
+                link.get("type", {}).get("name") == "Work item split"
+                and parent_key
+                in (
+                    (link.get("inwardIssue") or {}).get("key"),
+                    (link.get("outwardIssue") or {}).get("key"),
+                )
+                for link in hit.get("fields", {}).get("issuelinks", [])
+            )
+            state.phase2_done[child_id] = {
+                "key": hit["key"],
+                "linked": linked,
+                "commented": False,
+            }
 
     # Capture parent's components and non-automation labels for inheritance
     label_prefix = config["label_prefix"]
@@ -227,25 +333,27 @@ def phase1_persist(server, user, token, parent_key, children, state, config, dry
     comment_marker = config["comment_marker"]
 
     for idx, (child_id, title, priority, artifact_path) in enumerate(children, 1):
-        if idx in state.phase1_done:
-            print(f"  Phase 1: Child {idx}/{total} already posted, skipping")
+        if child_id in state.phase1_done:
+            print(f"  Phase 1: Child {child_id} ({idx}/{total}) already posted, skipping")
             continue
 
         _, _, full_markdown, _ = parse_child(artifact_path)
-        header = f"{comment_marker} Split child {idx} of {total}: {title}"
+        # The header carries the child's local id so recovery maps by
+        # identity, not position (RHAIFIRST-570).
+        header = f"{comment_marker} Split child {child_id} ({idx} of {total}): {title}"
 
         if dry_run:
             print(
                 f"  Phase 1: Would post archival comment for child "
-                f"{idx}/{total}: {title} ({len(full_markdown)} chars)"
+                f"{child_id} ({idx}/{total}): {title} ({len(full_markdown)} chars)"
             )
-            state.phase1_done[idx] = "dry-run"
+            state.phase1_done[child_id] = "dry-run"
             continue
 
         body_adf = archival_comment_adf(header, full_markdown)
         result = add_comment(server, user, token, parent_key, body_adf)
-        state.phase1_done[idx] = result["id"]
-        print(f"  Phase 1: Posted content for child {idx}/{total}: {title}")
+        state.phase1_done[child_id] = result["id"]
+        print(f"  Phase 1: Posted content for child {child_id} ({idx}/{total}): {title}")
 
 
 def phase2_create_link(
@@ -264,16 +372,39 @@ def phase2_create_link(
     alignment_labels = config["alignment_labels"]
 
     for idx, (child_id, title, priority, artifact_path) in enumerate(children, 1):
-        if idx in state.phase2_done:
+        done = state.phase2_done.get(child_id)
+        if done and done["linked"] and done["commented"]:
             print(
-                f"  Phase 2: Child {idx}/{total} already created as "
-                f"{state.phase2_done[idx]}, skipping"
+                f"  Phase 2: Child {child_id} ({idx}/{total}) already created as "
+                f"{done['key']}, skipping"
             )
             continue
 
-        if idx not in state.phase1_done:
+        if done:
+            # Created by a previous run that died before finishing: complete
+            # the missing steps instead of minting a duplicate.
+            child_key = done["key"]
             print(
-                f"  ERROR: Child {idx}/{total} has no archival comment. Run Phase 1 first.",
+                f"  Phase 2: Child {child_id} ({idx}/{total}) found as {child_key} "
+                f"(linked: {done['linked']}, confirmed: {done['commented']}) — completing"
+            )
+            if not done["linked"]:
+                create_issue_link(server, user, token, "Work item split", parent_key, child_key)
+                print(f"           Linked {child_key} to {parent_key}")
+                done["linked"] = True
+            if not done["commented"]:
+                confirm_text = (
+                    f"{comment_marker} Created as {child_key} for {child_id}, "
+                    f"linked to parent. ({idx} of {total})"
+                )
+                add_comment(server, user, token, parent_key, text_to_adf_paragraph(confirm_text))
+                done["commented"] = True
+            continue
+
+        if child_id not in state.phase1_done:
+            print(
+                f"  ERROR: Child {child_id} ({idx}/{total}) has no archival comment. "
+                f"Run Phase 1 first.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -281,8 +412,14 @@ def phase2_create_link(
         _, _, _, cleaned_markdown = config["parse_child_fn"](artifact_path)
         description_adf = markdown_to_adf(cleaned_markdown)
 
-        # Determine labels from review frontmatter
-        labels = [f"{label_prefix}-auto-created", f"{label_prefix}-split-result"]
+        # Determine labels from review frontmatter. The marker label is the
+        # recovery signal that exists from the instant the child does — and
+        # doubles as visible local-id provenance on the ticket.
+        labels = [
+            f"{label_prefix}-auto-created",
+            f"{label_prefix}-split-result",
+            _child_marker_label(label_prefix, child_id),
+        ]
 
         review_path = find_review(artifacts_dir, child_id)
         review_rec = None
@@ -328,7 +465,11 @@ def phase2_create_link(
             print(f"           Would link to {parent_key} via 'Work item split'")
             if attn_reason:
                 print("           Would post needs-attention comment")
-            state.phase2_done[idx] = f"{project}-DRY"
+            state.phase2_done[child_id] = {
+                "key": f"{project}-DRY",
+                "linked": True,
+                "commented": True,
+            }
             continue
 
         # 1. Create ticket with labels, inherited components, and parent
@@ -355,10 +496,11 @@ def phase2_create_link(
         create_issue_link(server, user, token, "Work item split", parent_key, child_key)
         print(f"           Linked {child_key} to {parent_key}")
 
-        # 3. Post confirmation comment
+        # 3. Post confirmation comment (carries the child's local id so
+        # recovery maps by identity, not position)
         confirm_text = (
-            f"{comment_marker} Created as {child_key}, linked to parent. "
-            f"(ref: child {idx} of {total})"
+            f"{comment_marker} Created as {child_key} for {child_id}, "
+            f"linked to parent. ({idx} of {total})"
         )
         add_comment(server, user, token, parent_key, text_to_adf_paragraph(confirm_text))
 
@@ -371,7 +513,7 @@ def phase2_create_link(
             add_comment(server, user, token, child_key, markdown_to_adf(attn_md))
             print("           Posted needs-attention comment")
 
-        state.phase2_done[idx] = child_key
+        state.phase2_done[child_id] = {"key": child_key, "linked": True, "commented": True}
 
 
 def build_split_summary_adf(server, children, state, total, config):
@@ -380,8 +522,8 @@ def build_split_summary_adf(server, children, state, total, config):
     entity_plural = config["entity_name_plural"]
 
     list_items = []
-    for idx, (_, title, _, _) in enumerate(children, 1):
-        child_key = state.phase2_done[idx]
+    for child_id, title, _, _ in children:
+        child_key = state.phase2_done[child_id]["key"]
         url = f"{server.rstrip('/')}/browse/{child_key}"
         list_items.append(
             {
@@ -435,7 +577,7 @@ def phase3_close(server, user, token, parent_key, children, state, config, dry_r
     label_prefix = config["label_prefix"]
 
     if len(state.phase2_done) < total:
-        missing = [i for i in range(1, total + 1) if i not in state.phase2_done]
+        missing = [cid for (cid, _, _, _) in children if cid not in state.phase2_done]
         print(
             f"  ERROR: Cannot close parent — children {missing} not yet created.", file=sys.stderr
         )
@@ -660,8 +802,9 @@ def main():
     # Post-submit: update frontmatter and rename files
     rename_fn = config["rename_fn"]
     project = config["project"]
-    for idx, (child_id, title, priority, artifact_path) in enumerate(children, 1):
-        assigned_key = state.phase2_done.get(idx)
+    for child_id, title, priority, artifact_path in children:
+        assigned = state.phase2_done.get(child_id)
+        assigned_key = assigned["key"] if assigned else None
         if not assigned_key or assigned_key == f"{project}-DRY":
             continue
 

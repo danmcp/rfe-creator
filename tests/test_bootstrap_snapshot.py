@@ -1031,6 +1031,8 @@ class TestBootstrapIntegration:
         r = self._run_bootstrap(results, art_dir, url)
         assert r.returncode == 0, r.stderr
         assert "walking back to 20260331-110000" in r.stderr
+        # The hard filter excludes quarantined split parents (RHAIFIRST-570).
+        assert "rfe-creator-split-quarantine" in r.stderr
         # The stage warning is evaluated against the report actually USED —
         # the walked-back one — not the empty tip (which has no stage field).
         assert "run report 20260331-110000 is report_stage: pre_submit" in r.stderr

@@ -46,7 +46,9 @@ def _write_raw(path, content):
 def _write_review(workspace, subdir, item_id, id_field, error=None):
     fields = f"{id_field}: {item_id}\n"
     if error:
-        fields += f"error: {error}\n"
+        # Quote: production error values contain colons (split_failed: ...),
+        # which unquoted would parse as a nested YAML mapping.
+        fields += f"error: '{error}'\n"
     path = workspace / "artifacts" / subdir / f"{item_id}-review.md"
     _write_raw(str(path), f"---\n{fields}---\n")
 
@@ -179,12 +181,49 @@ class TestNoErrorsClearsRetryFile:
 class TestSplitErrorCleanup:
     """The --type must reach cleanup_partial_split, or children are orphaned."""
 
+    def test_split_submit_failed_does_not_clean_children(self, workspace):
+        """A split_submit failure may be PARTIALLY APPLIED in Jira — deleting
+        the local child files would orphan Jira twins that already exist
+        (RHAIFIRST-570). Only the agent-side split_failed class cleans."""
+        _rfe_task(workspace, "RHAIRFE-10", status="Archived")
+        _rfe_task(workspace, "RFE-011", parent_key="RHAIRFE-10")
+        _write_review(
+            workspace, "rfe-reviews", "RHAIRFE-10", "rfe_id", "split_submit_failed: exit 1"
+        )
+        _set_ids(workspace, "RHAIRFE-10")
+
+        _, stderr, rc = _run(workspace)
+        assert rc == 0, stderr
+        assert os.path.exists(workspace / "artifacts/rfe-tasks/RFE-011.md")
+
+    def test_split_refused_does_not_clean_children(self, workspace):
+        """A refusal created nothing in Jira; the local children are the
+        human-review material — cleanup would destroy it."""
+        _rfe_task(workspace, "RHAIRFE-10", status="Archived")
+        _rfe_task(workspace, "RFE-011", parent_key="RHAIRFE-10")
+        _write_review(
+            workspace,
+            "rfe-reviews",
+            "RHAIRFE-10",
+            "rfe_id",
+            "split_refused: too many leaf children",
+        )
+        _set_ids(workspace, "RHAIRFE-10")
+
+        _, stderr, rc = _run(workspace)
+        assert rc == 0, stderr
+        assert os.path.exists(workspace / "artifacts/rfe-tasks/RFE-011.md")
+
     def test_initiative_children_deleted(self, workspace):
         _init_task(workspace, "RHOAIENG-10", status="Archived")
         _init_task(workspace, "RHOAIENG-11", parent_key="RHOAIENG-10")
         _init_task(workspace, "RHOAIENG-12", parent_key="RHOAIENG-10")
         _write_review(
-            workspace, "initiative-reviews", "RHOAIENG-10", "initiative_id", "split failed"
+            workspace,
+            "initiative-reviews",
+            "RHOAIENG-10",
+            "initiative_id",
+            "split_failed: agent did not write split-status file",
         )
         _set_ids(workspace, "RHOAIENG-10")
 
@@ -197,7 +236,11 @@ class TestSplitErrorCleanup:
         _init_task(workspace, "RHOAIENG-20", status="Archived")
         _init_task(workspace, "RHOAIENG-21", parent_key="RHOAIENG-20")
         _write_review(
-            workspace, "initiative-reviews", "RHOAIENG-20", "initiative_id", "split failed"
+            workspace,
+            "initiative-reviews",
+            "RHOAIENG-20",
+            "initiative_id",
+            "split_failed: agent did not write split-status file",
         )
         _set_ids(workspace, "RHOAIENG-20")
 
@@ -209,7 +252,11 @@ class TestSplitErrorCleanup:
     def test_initiative_split_status_deleted(self, workspace):
         _init_task(workspace, "RHOAIENG-30")
         _write_review(
-            workspace, "initiative-reviews", "RHOAIENG-30", "initiative_id", "split failed"
+            workspace,
+            "initiative-reviews",
+            "RHOAIENG-30",
+            "initiative_id",
+            "split_failed: agent did not write split-status file",
         )
         status_file = workspace / "artifacts/initiative-reviews/RHOAIENG-30-split-status.yaml"
         _write_raw(str(status_file), "action: split\n")
@@ -223,7 +270,13 @@ class TestSplitErrorCleanup:
         """Regression guard: the default path must keep working unchanged."""
         _rfe_task(workspace, "RHAIRFE-10", status="Archived")
         _rfe_task(workspace, "RHAIRFE-11", parent_key="RHAIRFE-10")
-        _write_review(workspace, "rfe-reviews", "RHAIRFE-10", "rfe_id", "split failed")
+        _write_review(
+            workspace,
+            "rfe-reviews",
+            "RHAIRFE-10",
+            "rfe_id",
+            "split_failed: agent did not write split-status file",
+        )
         _set_ids(workspace, "RHAIRFE-10")
 
         _, stderr, rc = _run(workspace)

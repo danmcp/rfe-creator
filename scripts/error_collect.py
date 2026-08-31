@@ -150,7 +150,14 @@ def main():
     for rfe_id in error_ids:
         err = error_details.get(rfe_id, {}).get("error", "")
         is_revise_error = "revise" in str(err).lower()
-        is_split_error = "split" in str(err).lower()
+        # Prefix allow-list, not a substring test: split_refused: (nothing
+        # created — cleanup pointless) and split_submit_failed: (Jira may be
+        # PARTIALLY applied — cleanup would delete local child files whose
+        # Jira twins already exist, orphaning them) must never trigger
+        # cleanup_partial_split (RHAIFIRST-570). Only the agent-side
+        # split_failed class, recorded before any Jira write, is safe to
+        # clean and retry.
+        is_split_error = str(err).startswith("split_failed")
 
         # Restore task file from original for revise errors
         if is_revise_error:

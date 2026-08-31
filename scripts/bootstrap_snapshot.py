@@ -443,10 +443,10 @@ def main():
     tip_name = run_name
 
     # Step 2: Fetch all current issues with hard filters
-    ignore_label = snap_config["ignore_label"]
+    excluded = f"{snap_config['ignore_label']}, {snap_config['quarantine_label']}"
     jql = (
         f"({args.jql}) AND statusCategory != Done "
-        f"AND (labels not in ({ignore_label}) OR labels is EMPTY)"
+        f"AND (labels not in ({excluded}) OR labels is EMPTY)"
     )
     print(f"JQL: {jql}", file=sys.stderr)
 

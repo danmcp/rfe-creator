@@ -56,10 +56,12 @@ SNAPSHOT_DIR = os.path.join(SCRIPT_DIR, "..", "artifacts", "auto-fix-runs")
 SNAPSHOT_CONFIG = {
     "rfe": {
         "ignore_label": "rfe-creator-ignore",
+        "quarantine_label": "rfe-creator-split-quarantine",
         "snapshot_prefix": "issue-snapshot-",
     },
     "initiative": {
         "ignore_label": "initiative-ignore",
+        "quarantine_label": "initiative-split-quarantine",
         "snapshot_prefix": "initiative-snapshot-",
     },
 }
@@ -366,10 +368,14 @@ def cmd_fetch(args):
     # Hard filters only
     # NOTE: "labels not in (X)" excludes issues with NO labels at all in Jira,
     # so we must also include "labels is EMPTY" to catch unlabeled issues.
-    ignore_label = config["ignore_label"]
+    # The quarantine label parks a parent whose split failed partway: its
+    # snapshot entry stays processed:false, so without the exclusion the
+    # nightly would re-select it forever, and each retry can mint duplicate
+    # children (RHAIFIRST-570). A human clears it by removing the label.
+    excluded = f"{config['ignore_label']}, {config['quarantine_label']}"
     jql = (
         f"({args.jql}) AND statusCategory != Done "
-        f"AND (labels not in ({ignore_label}) OR labels is EMPTY)"
+        f"AND (labels not in ({excluded}) OR labels is EMPTY)"
     )
     print(f"JQL={jql}", file=sys.stderr)
 

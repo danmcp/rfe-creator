@@ -107,6 +107,23 @@ def get_issue(server, user, token, key, fields=None):
     return api_call_with_retry(server, path, user, token)
 
 
+def search_issues(server, user, token, jql, fields):
+    """GET /search/jql — single page (recovery-sized queries, <=50 results).
+
+    Returns the raw issue dicts. Callers needing pagination should use
+    snapshot_fetch's paginated fetch; split recovery never exceeds the leaf
+    cap, so one page is guaranteed sufficient.
+    """
+    import urllib.parse as _parse
+
+    path = (
+        f"/search/jql?jql={_parse.quote(jql, safe='')}"
+        f"&maxResults=50&fields={_parse.quote(fields, safe=',')}"
+    )
+    data = api_call_with_retry(server, path, user, token)
+    return data.get("issues", [])
+
+
 def get_comments(server, user, token, issue_key):
     """GET all comments for an issue, handling pagination."""
     comments = []
