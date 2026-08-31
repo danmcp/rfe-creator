@@ -55,7 +55,17 @@ BOOTSTRAP_CONFIG = {
 def _load_run_report(results_dir, run_name, config=None):
     """Load processed IDs and report from the run's item list.
 
-    Returns (set_of_ids, report_dict), or (None, None) if no report file exists.
+    Returns (set_of_ids, report_dict) — the set may be EMPTY for a legitimate
+    zero-count run — or (None, None) if no report file exists. Absence and
+    emptiness are different signals: an absent report has the documented
+    include-all fallback, while an empty one is positive evidence the run
+    processed nothing, so the caller walks back to an older run instead
+    (RHAIFIRST-569).
+
+    Error entries do not count as processed: the run recorded them precisely
+    because it could NOT dispose of them (no readable review), so counting
+    them here would freeze them out of every future fetch — the
+    RHAIRFE-3201 shape, reachable through bootstrap (RHAIFIRST-582).
 
     Raises ValueError when the file exists but cannot be understood — unreadable, malformed YAML,
     not a mapping, or entries without an id. That is a different situation from absence: absence
@@ -78,17 +88,37 @@ def _load_run_report(results_dir, run_name, config=None):
         raise ValueError(f"run report {path} is not a mapping (got {type(report).__name__})")
     if item_key not in report:
         # The drift shape: a report written under a different item key. An empty LIST is a
-        # legitimate zero-count run and keeps the documented fallback; a missing KEY means the
+        # legitimate zero-count run (the caller walks back); a missing KEY means the
         # writer and this reader disagree about the schema, and pretending the report is absent
         # would hide exactly that.
         raise ValueError(f"run report {path} has no {item_key} item list")
     try:
-        ids = {e["id"] for e in report.get(item_key, [])}
+        ids = {e["id"] for e in report.get(item_key, []) if "error" not in e}
     except (TypeError, KeyError) as e:
         raise ValueError(f"run report {path} has malformed {item_key} entries: {e}") from e
-    if not ids:
-        return None, None
     return ids, report
+
+
+def _older_run_names(results_dir, run_name):
+    """Run directory names strictly older than run_name, newest first.
+
+    Same eligibility rules as find_latest_run_timestamp; the strict name
+    comparison also excludes replay directories newer than the `latest`
+    symlink target (pushed with --no-update-latest).
+    """
+    names = []
+    for name in sorted(os.listdir(results_dir), reverse=True):
+        if name.startswith(".") or name in ("latest", "test-data"):
+            continue
+        if not os.path.isdir(os.path.join(results_dir, name)):
+            continue
+        try:
+            datetime.strptime(name, "%Y%m%d-%H%M%S")
+        except ValueError:
+            continue
+        if name < run_name:
+            names.append(name)
+    return names
 
 
 def _run_dir_has_snapshots(results_dir, run_name):
@@ -389,12 +419,54 @@ def main():
     print(f"Fetched {len(current)} issues from Jira", file=sys.stderr)
 
     # Filter to issues that were actually processed in the run
+    run_report = None
     try:
-        # The report half of the tuple is unused here — main() only needs the ID filter.
-        processed_ids, _ = _load_run_report(args.results_dir, run_name, config=boot_config)
+        processed_ids, run_report = _load_run_report(args.results_dir, run_name, config=boot_config)
+        # An empty item list is a legitimate zero-count run (a valid outcome
+        # since bc2f553), not missing evidence: falling through to include-all
+        # would re-surface the whole backlog that earlier runs already
+        # processed. Walk back to the most recent run that processed anything
+        # and reconstruct state as of THAT run — using the empty run's newer
+        # timestamp instead would hash issues at post-edit state, hiding any
+        # edit made between the two runs from change detection (RHAIFIRST-569).
+        if processed_ids is not None and not processed_ids:
+            for older_name in _older_run_names(args.results_dir, run_name):
+                older_ids, older_report = _load_run_report(
+                    args.results_dir, older_name, config=boot_config
+                )
+                if older_ids is None:
+                    print(
+                        f"Warning: {older_name} has no run report — skipped in walk-back",
+                        file=sys.stderr,
+                    )
+                    continue
+                if not older_ids:
+                    continue
+                print(
+                    f"Run {run_name} processed nothing — walking back to {older_name}",
+                    file=sys.stderr,
+                )
+                run_name = older_name
+                run_dt = datetime.strptime(older_name, "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
+                processed_ids, run_report = older_ids, older_report
+                break
+            else:
+                # Every report in history says "processed nothing" — that is
+                # positive evidence, not absence, so neither the --include-all
+                # gate nor the partial-clone guard applies (run_report stays
+                # set to mark that a report WAS read): snapshotting everything
+                # as unprocessed states exactly what the reports state.
+                print(
+                    "Warning: no run with a non-empty item list found — "
+                    "including all issues as unprocessed",
+                    file=sys.stderr,
+                )
+                processed_ids = None
     except ValueError as e:
         # Present but not understood is not the same as absent: absence has a documented
         # fallback, a corrupt report does not. Only an explicit --include-all proceeds.
+        # The same strictness applies to a corrupt report met during walk-back — the
+        # chain of evidence stops at the first report that cannot be read.
         if not args.include_all:
             print(
                 f"Error: {e}. Pass --include-all to snapshot every fetched issue "
@@ -406,7 +478,11 @@ def main():
         processed_ids = None
     unfiltered = processed_ids is None
     if unfiltered:
-        if not args.include_all and _run_dir_has_snapshots(args.results_dir, run_name):
+        if (
+            not args.include_all
+            and run_report is None
+            and _run_dir_has_snapshots(args.results_dir, run_name)
+        ):
             print(
                 f"Error: {run_name} has issue snapshots but no readable run report — "
                 f"the results directory looks partial (clone_results_repo.py omits run "
@@ -415,11 +491,24 @@ def main():
                 file=sys.stderr,
             )
             sys.exit(1)
-        print("Warning: no run report — including all issues", file=sys.stderr)
+        if run_report is None:
+            print("Warning: no run report — including all issues", file=sys.stderr)
     else:
         before = len(current)
         current = {k: v for k, v in current.items() if k in processed_ids}
         print(f"Filtered to {len(current)}/{before} issues from run report", file=sys.stderr)
+
+    if run_report is not None and run_report.get("report_stage") == "pre_submit":
+        # One line, absence of the field is silent: pre-versioned reports say
+        # nothing about their stage. A pre_submit tip predates that run's Jira
+        # writes, so split children may appear under local ids and be missing
+        # from this snapshot; they will surface as NEW on the next fetch.
+        print(
+            f"Warning: run report {run_name} is report_stage: pre_submit — it predates "
+            f"that run's Jira writes; split children may appear under local ids and "
+            f"be missing from this snapshot",
+            file=sys.stderr,
+        )
 
     # Step 3: Find which issues were updated since the run
     run_jql_ts = run_dt.strftime("%Y-%m-%d %H:%M")

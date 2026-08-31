@@ -202,6 +202,81 @@ class TestSplitChildrenIncluded:
         assert report["input_count"] == 1
         assert len(report["per_rfe"]) == 2
 
+    def test_task_without_review_becomes_error_entry(self, art_dir):
+        """A task file with no review must surface as an error entry, not
+        vanish: the CLI's default population scans the reviews directory, so
+        RHAIRFE-3201 — whose review was cleared for a reassess cycle that
+        never ran — was absent from all 77 entries of its run while being
+        marked processed (RHAIFIRST-582)."""
+        _write(
+            f"{art_dir}/rfe-tasks/RHAIRFE-100.md",
+            TASK_TEMPLATE.format(rfe_id="RHAIRFE-100", extra=""),
+        )
+        _write(
+            f"{art_dir}/rfe-reviews/RHAIRFE-100-review.md",
+            REVIEW_TEMPLATE.format(
+                rfe_id="RHAIRFE-100",
+                score=9,
+                pass_val="true",
+                recommendation="submit",
+                right_sized=2,
+            ),
+        )
+        # Task present, review absent — the 3201 shape.
+        _write(
+            f"{art_dir}/rfe-tasks/RHAIRFE-101.md",
+            TASK_TEMPLATE.format(rfe_id="RHAIRFE-101", extra=""),
+        )
+
+        report = build_report(["RHAIRFE-100"], "20260825-151200", artifacts_dir=art_dir)
+
+        by_id = {e["id"]: e for e in report["per_rfe"]}
+        assert "RHAIRFE-101" in by_id, "task without review vanished from the report"
+        entry = by_id["RHAIRFE-101"]
+        assert entry["error"] == "review file not found"
+        assert entry["tracker_ref"] == "RHAIRFE-101"
+        assert report["results"]["errors"] == 1
+        assert [e["id"] for e in report["errors"]] == ["RHAIRFE-101"]
+        # input_count keeps meaning what was asked for, not what was found.
+        assert report["input_count"] == 1
+
+    def test_local_task_without_review_has_null_tracker_ref(self, art_dir):
+        """The error entry keeps the tracker_ref contract: a local id that was
+        never submitted has no remote reference."""
+        _write(
+            f"{art_dir}/rfe-tasks/RFE-002.md",
+            TASK_TEMPLATE.format(rfe_id="RFE-002", extra=""),
+        )
+
+        report = build_report([], "20260825-151200", artifacts_dir=art_dir)
+
+        by_id = {e["id"]: e for e in report["per_rfe"]}
+        assert by_id["RFE-002"]["error"] == "review file not found"
+        assert by_id["RFE-002"]["tracker_ref"] is None
+
+    def test_task_with_review_is_not_duplicated(self, art_dir):
+        """The task-population fold must not double-report ids the review
+        scan already covers."""
+        _write(
+            f"{art_dir}/rfe-tasks/RHAIRFE-100.md",
+            TASK_TEMPLATE.format(rfe_id="RHAIRFE-100", extra=""),
+        )
+        _write(
+            f"{art_dir}/rfe-reviews/RHAIRFE-100-review.md",
+            REVIEW_TEMPLATE.format(
+                rfe_id="RHAIRFE-100",
+                score=9,
+                pass_val="true",
+                recommendation="submit",
+                right_sized=2,
+            ),
+        )
+
+        report = build_report(["RHAIRFE-100"], "20260825-151200", artifacts_dir=art_dir)
+
+        assert [e["id"] for e in report["per_rfe"]] == ["RHAIRFE-100"]
+        assert report["results"]["errors"] == 0
+
     def test_no_children_no_change(self, art_dir):
         """When no splits occurred, behavior is unchanged."""
         _write(

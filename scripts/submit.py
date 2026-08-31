@@ -588,9 +588,36 @@ def main():
             except (ValidationError, Exception) as e:
                 print(f"Warning: cannot read review for {item_id}: {e}", file=sys.stderr)
 
-        rec = "submit"
-        if review_data:
-            rec = review_data.get("recommendation", "submit")
+        if review_data is None:
+            # No readable review means this item never finished the pipeline —
+            # interrupted mid-review, or its review was cleared for a reassess
+            # cycle that never ran. Submitting would push content no review
+            # approved, and marking it processed would freeze it out of every
+            # future run at an unchanged hash (RHAIRFE-3201, RHAIFIRST-582).
+            # Leave it untouched and unprocessed: the next fetch selects it as
+            # NEW, and check_resume finds no passing review to skip it on.
+            plan.append(
+                {
+                    id_field: item_id,
+                    "title": title,
+                    "is_existing": is_existing,
+                    "priority": priority,
+                    "size": size,
+                    "action": "SKIP",
+                    "labels": [],
+                    "remove_labels": [],
+                    "skip_reason": "no readable review — left unprocessed for the next run",
+                    "task_path": task_path,
+                    "attn_reason": None,
+                    "original_labels": task_data.get("original_labels") or [],
+                    "auto_approve": False,
+                    "jira_status": None,
+                    "leave_unprocessed": True,
+                }
+            )
+            continue
+
+        rec = review_data.get("recommendation", "submit")
 
         original_labels = task_data.get("original_labels") or []
         attn_reason = None
@@ -792,7 +819,11 @@ def main():
     for entry in plan:
         item_id = entry[id_field]
         if entry["skip_reason"]:
-            if "Jira conflict" not in entry["skip_reason"]:
+            # A conflict or an unreviewed item is not disposed of — marking it
+            # processed would exclude it from every future fetch (invariant 7:
+            # only a hash change resets the flag). Everything else skipped
+            # here was a decision (e.g. rejected) and counts as disposal.
+            if "Jira conflict" not in entry["skip_reason"] and not entry.get("leave_unprocessed"):
                 mark_processed_ids.append(item_id)
             print(f"  {item_id}: Skipping — {entry['skip_reason']}")
             continue

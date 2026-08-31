@@ -142,6 +142,14 @@ def build_report(
     status_map = _task_status_map(tasks, config)
     all_children = [c for kids in children_map.values() for c in kids]
     expanded_ids = list(ids) + [c for c in all_children if c not in ids]
+    # ...and every task file the run left behind. The CLI's default population
+    # scans the REVIEWS directory, so an item whose review was never written —
+    # or was cleared for a reassess cycle that never ran — simply vanished
+    # from the report while its task file sat in the run: RHAIRFE-3201 was
+    # marked processed yet absent from all 77 entries (RHAIFIRST-582). Tasks
+    # without a review land in the review-file-not-found error path below.
+    known = set(expanded_ids)
+    expanded_ids += [tid for tid in status_map if tid not in known]
 
     per_item = []
     before_totals = {f: [] for f in score_fields}
