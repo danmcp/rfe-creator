@@ -399,6 +399,50 @@ class TestRerunIsANoOp:
         assert _search_keys(jira.url, "labels = rfe-creator-split-result") == children_after_first
 
 
+class TestSystemicClassification:
+    def test_dead_auth_exits_systemic_without_fanout(self, art_dir):
+        """Every call answered 401: one classified message, exit 5, and only
+        a handful of requests — not a per-child fan-out (RHAIFIRST-571)."""
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        counter = {"n": 0}
+
+        class Deny(BaseHTTPRequestHandler):
+            def _deny(self):
+                counter["n"] += 1
+                self.send_response(401)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            do_GET = _deny  # noqa: N815
+            do_POST = _deny  # noqa: N815
+            do_PUT = _deny  # noqa: N815
+
+            def log_message(self, *a):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Deny)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        url = f"http://127.0.0.1:{server.server_port}"
+        try:
+            _write(f"{art_dir}/rfe-tasks/{PARENT_KEY}.md", PARENT_TASK)
+            _write(f"{art_dir}/rfe-originals/{PARENT_KEY}.md", PARENT_DESC)
+            for cid in ("RFE-001", "RFE-002"):
+                _write(
+                    f"{art_dir}/rfe-tasks/{cid}.md",
+                    CHILD_TASK.format(child_id=cid, title=f"Child {cid}"),
+                )
+            r = _run_split(art_dir, url)
+        finally:
+            server.shutdown()
+
+        assert r.returncode == 5, r.stderr + r.stdout
+        assert "systemic Jira failure" in r.stderr
+        # Conflict check (1) + discovery (1): far below a per-child fan-out.
+        assert counter["n"] <= 4, f"{counter['n']} requests"
+
+
 class TestLegacyComments:
     def test_positional_comments_still_map(self, art_dir, jira):
         """Comments written before the id-based format map through the

@@ -75,6 +75,10 @@ REPORT_STAGES = ("pre_submit", "final")
 # Nothing was created in Jira, so the parent is blocked, not split.
 SPLIT_REFUSED_PREFIX = "split_refused:"
 
+# submit.py writes this marker when split_submit CRASHED partway (as opposed
+# to refusing before any Jira write): children and links may exist in Jira.
+SPLIT_FAILED_PREFIX = "split_submit_failed:"
+
 
 def split_children_map(artifacts_dir, config, tasks=None):
     """Map parent ID -> child IDs for split children found in the task dir.
@@ -309,12 +313,23 @@ def build_report(
         # cap lives in split_submit and refusal has more than one cause.
         review_error = data.get("error") or ""
         blocked_reason = None
+        failed_reason = None
         if review_error.startswith(SPLIT_REFUSED_PREFIX):
             blocked_reason = data.get("needs_attention_reason") or review_error
             entry["blocked_reason"] = blocked_reason
+        elif review_error.startswith(SPLIT_FAILED_PREFIX):
+            # A crashed split still carries recommendation: split — counting
+            # it as a successful split reported the crash as an outcome
+            # (RHAIFIRST-571). Not an `error` entry: the review is fully
+            # readable and the entry keeps its scores; failed_reason marks
+            # the disposition.
+            failed_reason = data.get("needs_attention_reason") or review_error
+            entry["failed_reason"] = failed_reason
 
         if blocked_reason:
             counts["blocked"] += 1
+        elif failed_reason:
+            counts["failed"] += 1
         elif rec == "split":
             counts["split"] += 1
         elif data.get("pass", False):

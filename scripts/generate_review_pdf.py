@@ -506,8 +506,21 @@ def main():
     for sp in split_parents:
         leaves_by_parent[sp["rfe_id"]] = get_leaf_descendants(sp["rfe_id"])
 
-    # Tag children of refused/errored split parents so stats exclude them
-    refused_parents = {sp["rfe_id"] for sp in split_parents if sp.get("error")}
+    # Tag children of REFUSED split parents so stats exclude them: a refusal
+    # (split_refused:*, and legacy agent-side split_failed:*) created nothing
+    # in Jira, so its children were genuinely not submitted. A CRASHED
+    # submission (split_submit_failed:*) is different — it may be partially
+    # applied and its real children must not be dropped from the submitted
+    # stats or rendered as a refusal (RHAIFIRST-571).
+    def _is_refusal(err):
+        return bool(err) and not str(err).startswith("split_submit_failed:")
+
+    refused_parents = {sp["rfe_id"] for sp in split_parents if _is_refusal(sp.get("error"))}
+    failed_parents = {
+        sp["rfe_id"]
+        for sp in split_parents
+        if sp.get("error") and str(sp["error"]).startswith("split_submit_failed:")
+    }
 
     def _has_refused_ancestor(r):
         pk = r.get("parent_key")
@@ -1694,6 +1707,14 @@ def main():
             else ""
         }\
 {
+            f'''            <div class="stat-box" style="border-color: #c0392b;">
+                <div class="stat-value" style="color: #c0392b;">{len(failed_parents)}</div>
+                <div class="stat-label">Failed Splits</div>
+            </div>'''
+            if failed_parents
+            else ""
+        }\
+{
             f'''
             <div class="stat-box" style="border-color: #f39c12;">
                 <div class="stat-value" style="color: #f39c12;">{sc_needs_attn}</div>
@@ -1713,12 +1734,13 @@ def main():
         html += table_header
 
         if split_parents:
-            sp_error_count = sum(1 for r in split_parents if r.get("error"))
             sp_header = (
                 f"Split {entities} ({len(split_parents)} &rarr; {sp_total_children} children"
             )
-            if sp_error_count:
-                sp_header += f", {sp_error_count} refused"
+            if refused_parents:
+                sp_header += f", {len(refused_parents)} refused"
+            if failed_parents:
+                sp_header += f", {len(failed_parents)} failed"
             sp_header += ")"
             html += f"""        <tr id="section-splits"><td colspan="8" style="background:#fff3e0;font-weight:700;font-size:9pt;padding:6pt 8pt;color:#e65100;">{sp_header}</td></tr>
 """

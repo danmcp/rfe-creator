@@ -788,6 +788,165 @@ class TestSplitQuarantine:
         assert "rfe-creator-needs-attention" in labels
 
 
+class TestSplitLoopPolicy:
+    """RHAIFIRST-571: per-parent failures continue, systemic ones abort
+    without fan-out, and the breaker stops unclassified streaks."""
+
+    PARENT_TASK_TPL = (
+        "---\nrfe_id: {key}\ntitle: Parent {key}\n"
+        "priority: Major\nstatus: Archived\n---\n\nContent {key}.\n"
+    )
+    PARENT_REVIEW_TPL = (
+        "---\nrfe_id: {key}\nscore: 6\npass: false\n"
+        "recommendation: split\nfeasibility: feasible\n"
+        "auto_revised: false\nneeds_attention: false\n"
+        "scores:\n  what: 2\n  why: 1\n  open_to_how: 2\n"
+        "  not_a_task: 1\n  right_sized: 0\n---\n\nToo big.\n"
+    )
+
+    def _parent(self, jira, art_dir, key, broken=False):
+        jira.create(key, f"Parent {key}", f"Content {key}.")
+        _write(f"{art_dir}/rfe-originals/{key}.md", f"Content {key}.")
+        _write(f"{art_dir}/rfe-tasks/{key}.md", self.PARENT_TASK_TPL.format(key=key))
+        _write(f"{art_dir}/rfe-reviews/{key}-review.md", self.PARENT_REVIEW_TPL.format(key=key))
+        n = key.split("-")[1]
+        if broken:
+            # Archived dead-end intermediary: split_submit collects zero
+            # leaves and exits 4 (per-parent).
+            _write(
+                f"{art_dir}/rfe-tasks/RFE-{n}90.md",
+                f"---\nrfe_id: RFE-{n}90\ntitle: Dead end\n"
+                f"priority: Major\nstatus: Archived\n"
+                f"parent_key: {key}\n---\n\nDead end.\n",
+            )
+        else:
+            _write(
+                f"{art_dir}/rfe-tasks/RFE-{n}01.md",
+                f"---\nrfe_id: RFE-{n}01\ntitle: Child of {key}\n"
+                f"priority: Major\nstatus: Ready\n"
+                f"parent_key: {key}\n---\n\nChild content.\n",
+            )
+
+    def test_per_parent_failure_continues_to_the_next_parent(self, art_dir, jira):
+        """Parent A fails per-parent (exit 4); parent B must still submit."""
+        self._parent(jira, art_dir, "RHAIRFE-1000", broken=True)
+        self._parent(jira, art_dir, "RHAIRFE-2000", broken=False)
+
+        r = _run_submit(art_dir, jira.url)
+        assert r.returncode == 1, r.stdout + r.stderr
+
+        # B's child was created and linked despite A's failure.
+        import urllib.request as _rq
+
+        req = _rq.Request(f"{jira.url}/rest/api/3/issue/RHAIRFE-2000?fields=issuelinks,labels")
+        with _rq.urlopen(req) as resp:
+            parent_b = json.loads(resp.read())
+        links = [
+            link
+            for link in parent_b["fields"].get("issuelinks", [])
+            if link.get("type", {}).get("name") == "Work item split"
+        ]
+        assert len(links) == 1, r.stdout
+        # A was quarantined, B was not.
+        req = _rq.Request(f"{jira.url}/rest/api/3/issue/RHAIRFE-1000?fields=labels")
+        with _rq.urlopen(req) as resp:
+            labels_a = set(json.loads(resp.read())["fields"]["labels"])
+        assert "rfe-creator-split-quarantine" in labels_a
+        assert "rfe-creator-split-quarantine" not in set(parent_b["fields"]["labels"])
+
+    def _stub_script(self, tmp_path, exit_code):
+        """A fake split_submit that logs its invocation and exits."""
+        log = tmp_path / "invocations.log"
+        stub = tmp_path / "stub_split_submit.py"
+        stub.write_text(
+            "import sys\n"
+            f"open({str(log)!r}, 'a').write(sys.argv[1] + chr(10))\n"
+            f"sys.exit({exit_code})\n"
+        )
+        return str(stub), log
+
+    def test_systemic_exit_aborts_without_touching_remaining_parents(
+        self, art_dir, jira, tmp_path, monkeypatch
+    ):
+        for key in ("RHAIRFE-1000", "RHAIRFE-2000", "RHAIRFE-3000"):
+            self._parent(jira, art_dir, key, broken=False)
+        stub, log = self._stub_script(tmp_path, 5)
+        monkeypatch.setenv("RFE_SPLIT_SUBMIT_SCRIPT", stub)
+
+        r = _run_submit(art_dir, jira.url)
+        assert r.returncode == 1
+        assert "systemic Jira failure" in r.stderr
+        assert len(log.read_text().splitlines()) == 1, "remaining parents were attempted"
+        # The parent was never really examined: no quarantine, no flag.
+        import urllib.request as _rq
+
+        req = _rq.Request(f"{jira.url}/rest/api/3/issue/RHAIRFE-1000?fields=labels")
+        with _rq.urlopen(req) as resp:
+            labels = set(json.loads(resp.read())["fields"]["labels"])
+        assert "rfe-creator-split-quarantine" not in labels
+
+    def test_breaker_trips_after_two_consecutive_unclassified_failures(
+        self, art_dir, jira, tmp_path, monkeypatch
+    ):
+        for key in ("RHAIRFE-1000", "RHAIRFE-2000", "RHAIRFE-3000"):
+            self._parent(jira, art_dir, key, broken=False)
+        stub, log = self._stub_script(tmp_path, 7)
+        monkeypatch.setenv("RFE_SPLIT_SUBMIT_SCRIPT", stub)
+
+        r = _run_submit(art_dir, jira.url)
+        assert r.returncode == 1
+        assert "2 consecutive unclassified split failures" in r.stderr
+        assert len(log.read_text().splitlines()) == 2, "breaker did not stop the loop"
+
+    def test_dead_jira_fails_preflight_with_one_message_and_no_fanout(
+        self, art_dir, tmp_path, monkeypatch
+    ):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        class Deny(BaseHTTPRequestHandler):
+            def _deny(self):
+                self.send_response(401)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            do_GET = _deny  # noqa: N815
+            do_POST = _deny  # noqa: N815
+            do_PUT = _deny  # noqa: N815
+
+            def log_message(self, *a):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Deny)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        url = f"http://127.0.0.1:{server.server_port}"
+        stub, log = self._stub_script(tmp_path, 0)
+        monkeypatch.setenv("RFE_SPLIT_SUBMIT_SCRIPT", stub)
+        try:
+            _write(
+                f"{art_dir}/rfe-tasks/RHAIRFE-1000.md",
+                self.PARENT_TASK_TPL.format(key="RHAIRFE-1000"),
+            )
+            _write(f"{art_dir}/rfe-originals/RHAIRFE-1000.md", "Content RHAIRFE-1000.")
+            _write(
+                f"{art_dir}/rfe-reviews/RHAIRFE-1000-review.md",
+                self.PARENT_REVIEW_TPL.format(key="RHAIRFE-1000"),
+            )
+            _write(
+                f"{art_dir}/rfe-tasks/RFE-100001.md",
+                "---\nrfe_id: RFE-100001\ntitle: Child\n"
+                "priority: Major\nstatus: Ready\n"
+                "parent_key: RHAIRFE-1000\n---\n\nChild content.\n",
+            )
+            r = _run_submit(art_dir, url)
+        finally:
+            server.shutdown()
+
+        assert r.returncode == 1
+        assert "Jira preflight failed" in r.stderr
+        assert not log.exists(), "split_submit was invoked despite a dead preflight"
+
+
 class TestSplitConflictDetection:
     """Integration test: split_submit.py detects parent conflict."""
 

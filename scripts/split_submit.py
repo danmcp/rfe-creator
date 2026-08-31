@@ -23,6 +23,7 @@ import argparse
 import os
 import re
 import sys
+import urllib.error
 
 # Ensure progress output is visible immediately when stdout is redirected
 # to a file or pipe (Python defaults to full buffering in that case).
@@ -58,6 +59,47 @@ from jira_utils import (  # noqa: E402
 )
 
 MAX_LEAF_CHILDREN = 6
+
+# Exit-code contract consumed by submit.py's split loop (RHAIFIRST-571).
+# 2 and 3 predate this and stay: leaf-cap refusal and Jira conflict.
+EXIT_PER_PARENT = 4  # this parent failed; others are unaffected — continue
+EXIT_SYSTEMIC = 5  # Jira itself is unusable (auth, outage) — abort the loop
+EXIT_USAGE = 64  # argparse would exit 2, which reads as the leaf cap
+
+
+class _Parser(argparse.ArgumentParser):
+    """argparse exits 2 on usage errors — indistinguishable from the leaf-cap
+    refusal to the caller. Route usage errors to EX_USAGE instead."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        print(f"{self.prog}: error: {message}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+
+
+def _classify_exit(exc):
+    """Map an escaped exception to the per-parent/systemic exit code.
+
+    jira_utils.api_call_with_retry is a RETRY classifier, not a fatal one:
+    it re-raises 401/403/400/404 immediately and 429/5xx/URLError after
+    three attempts. What reaches here is one undifferentiated bucket, so
+    classify by what the failure says about the NEXT parent: an expired
+    token or an unreachable instance fails every parent identically
+    (systemic), while a 400 on one child's field or a local artifact
+    problem says nothing about the others (per-parent).
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code in (401, 403):
+            return EXIT_SYSTEMIC
+        if exc.code in (429, 502, 503, 504):
+            # Only reachable after api_call_with_retry exhausted its
+            # attempts — a healthy instance would have recovered within.
+            return EXIT_SYSTEMIC
+        return EXIT_PER_PARENT
+    if isinstance(exc, urllib.error.URLError):
+        return EXIT_SYSTEMIC
+    return EXIT_PER_PARENT
+
 
 SPLIT_CONFIG = {
     "rfe": {
@@ -464,7 +506,7 @@ def phase2_create_link(
                 f"Run Phase 1 first.",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            sys.exit(EXIT_PER_PARENT)
 
         _, _, _, cleaned_markdown = config["parse_child_fn"](artifact_path)
         description_adf = markdown_to_adf(cleaned_markdown)
@@ -638,7 +680,7 @@ def phase3_close(server, user, token, parent_key, children, state, config, dry_r
         print(
             f"  ERROR: Cannot close parent — children {missing} not yet created.", file=sys.stderr
         )
-        sys.exit(1)
+        sys.exit(EXIT_PER_PARENT)
 
     if dry_run:
         print(f"  Phase 3: Would label {parent_key} with {label_prefix}-split-original")
@@ -685,9 +727,7 @@ def phase3_close(server, user, token, parent_key, children, state, config, dry_r
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    parser = _Parser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("parent_key", help="Parent Jira issue key to split")
     parser.add_argument(
         "--type",
@@ -709,7 +749,7 @@ def main():
     if not args.dry_run and not all([server, user, token]):
         print("Error: JIRA_SERVER, JIRA_USER, and JIRA_TOKEN env vars required.", file=sys.stderr)
         print("Set these or use --dry-run for local-only validation.", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(EXIT_SYSTEMIC)
 
     # Scan task files to find parent and children via frontmatter
     scan_fn = config["scan_fn"]
@@ -722,7 +762,7 @@ def main():
             f"Error: No {entity_name.lower()} files found. Run /{entity_name.lower()}.split first.",
             file=sys.stderr,
         )
-        sys.exit(1)
+        sys.exit(EXIT_PER_PARENT)
 
     # Find parent: status=Archived with matching id
     parent_task = None
@@ -736,7 +776,7 @@ def main():
             f"Error: No archived parent with {id_field}={args.parent_key} found.",
             file=sys.stderr,
         )
-        sys.exit(1)
+        sys.exit(EXIT_PER_PARENT)
 
     # Find leaf children: walk the tree recursively to collect all
     # non-archived descendants.  Intermediary nodes (archived local IDs
@@ -765,7 +805,7 @@ def main():
             f"Error: No child {entity_name}s found with parent_key={args.parent_key}.",
             file=sys.stderr,
         )
-        sys.exit(1)
+        sys.exit(EXIT_PER_PARENT)
 
     if len(child_tasks) > MAX_LEAF_CHILDREN:
         print(
@@ -814,72 +854,87 @@ def main():
         except Exception as e:
             print(f"Warning: conflict check failed for {args.parent_key}: {e}", file=sys.stderr)
 
-    # Discover state (skip for dry-run without credentials)
-    if args.dry_run and not all([server, user, token]):
-        print("Dry run (no Jira credentials — skipping recovery check)")
+    # Everything from discovery on talks to Jira. An escaped exception is
+    # classified for submit.py's loop policy: per-parent failures let the
+    # other parents proceed; systemic ones (dead auth, unreachable
+    # instance) abort the whole split phase without fanning out
+    # (RHAIFIRST-571).
+    try:
+        # Discover state (skip for dry-run without credentials)
+        if args.dry_run and not all([server, user, token]):
+            print("Dry run (no Jira credentials — skipping recovery check)")
+            print()
+            state = SubmissionState()
+            state.total_children = len(children)
+        else:
+            print("Checking submission state...")
+            state = discover_state(server, user, token, args.parent_key, children, config)
+            if state.phase1_done:
+                print(
+                    f"  Phase 1: {len(state.phase1_done)}/{len(children)} archival comments found"
+                )
+            if state.phase2_done:
+                print(f"  Phase 2: {len(state.phase2_done)}/{len(children)} tickets created")
+            if state.parent_closed:
+                print("  Phase 3: Parent already closed")
+            if not state.phase1_done and not state.phase2_done:
+                print("  Fresh start — no prior progress found")
+            print()
+
+        # Run phases
+        print(f"Phase 1: Persisting child {entity_name} content to parent comments...")
+        phase1_persist(server, user, token, args.parent_key, children, state, config, args.dry_run)
         print()
-        state = SubmissionState()
-        state.total_children = len(children)
-    else:
-        print("Checking submission state...")
-        state = discover_state(server, user, token, args.parent_key, children, config)
-        if state.phase1_done:
-            print(f"  Phase 1: {len(state.phase1_done)}/{len(children)} archival comments found")
-        if state.phase2_done:
-            print(f"  Phase 2: {len(state.phase2_done)}/{len(children)} tickets created")
-        if state.parent_closed:
-            print("  Phase 3: Parent already closed")
-        if not state.phase1_done and not state.phase2_done:
-            print("  Fresh start — no prior progress found")
+
+        print("Phase 2: Creating tickets and linking...")
+        phase2_create_link(
+            server,
+            user,
+            token,
+            args.parent_key,
+            children,
+            state,
+            args.artifacts_dir,
+            config,
+            args.dry_run,
+        )
         print()
 
-    # Run phases
-    print(f"Phase 1: Persisting child {entity_name} content to parent comments...")
-    phase1_persist(server, user, token, args.parent_key, children, state, config, args.dry_run)
-    print()
+        print("Phase 3: Closing parent...")
+        phase3_close(server, user, token, args.parent_key, children, state, config, args.dry_run)
+        print()
 
-    print("Phase 2: Creating tickets and linking...")
-    phase2_create_link(
-        server,
-        user,
-        token,
-        args.parent_key,
-        children,
-        state,
-        args.artifacts_dir,
-        config,
-        args.dry_run,
-    )
-    print()
+        # Post-submit: update frontmatter and rename files. Never under dry-run:
+        # recovery can adopt children with REAL keys (not the -DRY sentinel), and
+        # renaming local artifacts is a write the caller did not ask for.
+        rename_fn = config["rename_fn"]
+        project = config["project"]
+        for child_id, title, priority, artifact_path in children:
+            assigned = state.phase2_done.get(child_id)
+            assigned_key = assigned["key"] if assigned else None
+            if args.dry_run or not assigned_key or assigned_key == f"{project}-DRY":
+                continue
+            if assigned_key == child_id:
+                # Already renamed by a run that died between the rename and the
+                # index rebuild — nothing to do.
+                continue
 
-    print("Phase 3: Closing parent...")
-    phase3_close(server, user, token, args.parent_key, children, state, config, args.dry_run)
-    print()
+            rename_fn(args.artifacts_dir, child_id, assigned_key)
+            print(f"  {child_id}: Renamed artifacts to {assigned_key}")
 
-    # Post-submit: update frontmatter and rename files. Never under dry-run:
-    # recovery can adopt children with REAL keys (not the -DRY sentinel), and
-    # renaming local artifacts is a write the caller did not ask for.
-    rename_fn = config["rename_fn"]
-    project = config["project"]
-    for child_id, title, priority, artifact_path in children:
-        assigned = state.phase2_done.get(child_id)
-        assigned_key = assigned["key"] if assigned else None
-        if args.dry_run or not assigned_key or assigned_key == f"{project}-DRY":
-            continue
-        if assigned_key == child_id:
-            # Already renamed by a run that died between the rename and the
-            # index rebuild — nothing to do.
-            continue
-
-        rename_fn(args.artifacts_dir, child_id, assigned_key)
-        print(f"  {child_id}: Renamed artifacts to {assigned_key}")
-
-    # Rebuild index (RFE only)
-    if config["do_rebuild_index"]:
-        rebuild_index(args.artifacts_dir)
-        print(f"Done. Index rebuilt at {args.artifacts_dir}/rfes.md")
-    else:
-        print("Done.")
+        # Rebuild index (RFE only)
+        if config["do_rebuild_index"]:
+            rebuild_index(args.artifacts_dir)
+            print(f"Done. Index rebuilt at {args.artifacts_dir}/rfes.md")
+        else:
+            print("Done.")
+    except SystemExit:
+        raise
+    except Exception as e:
+        code = _classify_exit(e)
+        kind = "systemic Jira failure" if code == EXIT_SYSTEMIC else "per-parent failure"
+        print(f"Error: {kind}: {type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(code)
 
 
 if __name__ == "__main__":

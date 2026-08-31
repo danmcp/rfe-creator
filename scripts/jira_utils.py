@@ -107,6 +107,15 @@ def get_issue(server, user, token, key, fields=None):
     return api_call_with_retry(server, path, user, token)
 
 
+def get_myself(server, user, token):
+    """GET /myself — the cheapest authenticated call, used as a preflight.
+
+    A dead token or unreachable instance fails here for the cost of ONE
+    request, instead of once per parent inside a fan-out (RHAIFIRST-571).
+    """
+    return api_call_with_retry(server, "/myself", user, token)
+
+
 def search_issues(server, user, token, jql, fields):
     """GET /search/jql — single page (recovery-sized queries, <=50 results).
 

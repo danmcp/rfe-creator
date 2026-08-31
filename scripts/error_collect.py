@@ -143,11 +143,32 @@ def main():
     with open(RETRY_ERRORS_FILE, "w") as f:
         yaml.dump(error_details, f, default_flow_style=False, sort_keys=False)
 
+    # Non-retryable classes stay OUT of the retry batch (RHAIFIRST-571):
+    # split_refused: is routed to a human (RHAIFIRST-562), and
+    # split_submit_failed: may be PARTIALLY APPLIED in Jira — its parent is
+    # quarantined (RHAIFIRST-570) and an automated retry could mint
+    # duplicate children. Both remain in the error history above.
+    non_retryable = ("split_refused:", "split_submit_failed:")
+    retryable_ids = [
+        rfe_id
+        for rfe_id in error_ids
+        if not str(error_details.get(rfe_id, {}).get("error", "")).startswith(non_retryable)
+    ]
+    excluded = [rfe_id for rfe_id in error_ids if rfe_id not in retryable_ids]
+    if excluded:
+        print(f"ERROR_COLLECT: excluded from retry (non-retryable): {', '.join(excluded)}")
+    if not retryable_ids:
+        # Same contract as the zero-errors return above: a cleared file sends
+        # the ERROR_COLLECT transition to REPORT instead of a retry batch.
+        _write_ids(RETRY_IDS_FILE, [])
+        print("ERROR_COLLECT: no retryable error IDs found")
+        return
+
     # Step 4: Persist retry IDs
-    _write_ids(RETRY_IDS_FILE, error_ids)
+    _write_ids(RETRY_IDS_FILE, retryable_ids)
 
     # Step 5: Artifact cleanup
-    for rfe_id in error_ids:
+    for rfe_id in retryable_ids:
         err = error_details.get(rfe_id, {}).get("error", "")
         is_revise_error = "revise" in str(err).lower()
         # Prefix allow-list, not a substring test: split_refused: (nothing
@@ -217,7 +238,7 @@ def main():
 
     # Step 6: Post-cleanup verification
     warnings = []
-    for rfe_id in error_ids:
+    for rfe_id in retryable_ids:
         for path in [
             f"tmp/rfe-assess/single/{rfe_id}.result.md",
             f"{tc['reviews_dir']}/{rfe_id}-review.md",
@@ -242,9 +263,12 @@ def main():
         state["retry_batch"] = retry_batch
         state["total_batches"] = retry_batch
         _save_state(state)
-    _write_ids(f"tmp/pipeline-batch-{retry_batch}-ids.txt", error_ids)
+    _write_ids(f"tmp/pipeline-batch-{retry_batch}-ids.txt", retryable_ids)
 
-    print(f"ERROR_COLLECT: retry batch with {len(error_ids)} error IDs [{', '.join(error_ids)}]")
+    print(
+        f"ERROR_COLLECT: retry batch with {len(retryable_ids)} error IDs "
+        f"[{', '.join(retryable_ids)}]"
+    )
     for rfe_id, details in error_details.items():
         print(f"  {rfe_id}: {details.get('error', 'unknown')}")
 
