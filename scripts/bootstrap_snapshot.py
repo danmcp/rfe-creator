@@ -92,10 +92,19 @@ def _load_run_report(results_dir, run_name, config=None):
         # writer and this reader disagree about the schema, and pretending the report is absent
         # would hide exactly that.
         raise ValueError(f"run report {path} has no {item_key} item list")
-    try:
-        ids = {e["id"] for e in report.get(item_key, []) if "error" not in e}
-    except (TypeError, KeyError) as e:
-        raise ValueError(f"run report {path} has malformed {item_key} entries: {e}") from e
+    ids = set()
+    for entry in report.get(item_key, []):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"run report {path} has malformed {item_key} entries: "
+                f"expected a mapping, got {type(entry).__name__}"
+            )
+        if "error" in entry:
+            continue
+        try:
+            ids.add(entry["id"])
+        except KeyError as e:
+            raise ValueError(f"run report {path} has malformed {item_key} entries: {e}") from e
     return ids, report
 
 
@@ -406,6 +415,13 @@ def main():
         print("Error: no valid run directories found", file=sys.stderr)
         sys.exit(1)
     print(f"Last run: {run_name} ({run_dt.isoformat()})", file=sys.stderr)
+    # The snapshot FILE is always named after the tip run, even when the
+    # walk-back reconstructs from an older one: find_previous_snapshot picks
+    # the reverse-lexically newest name, so a file named after the older run
+    # would be shadowed forever by any stale snapshot a pre-walk-back
+    # bootstrap left under the tip name — and a re-run must overwrite that
+    # file in place. bootstrapped_from records the run actually used.
+    tip_name = run_name
 
     # Step 2: Fetch all current issues with hard filters
     ignore_label = snap_config["ignore_label"]
@@ -435,6 +451,30 @@ def main():
                     args.results_dir, older_name, config=boot_config
                 )
                 if older_ids is None:
+                    if _run_dir_has_snapshots(args.results_dir, older_name):
+                        # Same shape the tip-level guard refuses: snapshots
+                        # prove a real pipeline run whose report is invisible
+                        # (partial clone, or an aborted run that submitted
+                        # before it could publish). Its work is unknown, so
+                        # "include everything as unprocessed" would re-select
+                        # a backlog that run may already have disposed of.
+                        if not args.include_all:
+                            print(
+                                f"Error: walk-back reached {older_name}, which has issue "
+                                f"snapshots but no readable run report — the results "
+                                f"directory looks partial. Point --results-dir at a full "
+                                f"clone, or pass --include-all to snapshot every fetched "
+                                f"issue as unprocessed.",
+                                file=sys.stderr,
+                            )
+                            sys.exit(1)
+                        print(
+                            f"Warning: {older_name} has snapshots but no run report — "
+                            f"--include-all set, including all issues",
+                            file=sys.stderr,
+                        )
+                        processed_ids = None
+                        break
                     print(
                         f"Warning: {older_name} has no run report — skipped in walk-back",
                         file=sys.stderr,
@@ -604,7 +644,7 @@ def main():
         "issues": snapshot_issues,
     }
     snapshot_prefix = snap_config["snapshot_prefix"]
-    snapshot_path = os.path.join(snapshot_dir, f"{snapshot_prefix}{run_name}.yaml")
+    snapshot_path = os.path.join(snapshot_dir, f"{snapshot_prefix}{tip_name}.yaml")
     with open(snapshot_path, "w", encoding="utf-8") as f:
         yaml.dump(snapshot, f, default_flow_style=False, sort_keys=False)
     print(f"Wrote snapshot: {snapshot_path}")

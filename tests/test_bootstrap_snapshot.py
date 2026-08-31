@@ -1017,7 +1017,13 @@ class TestBootstrapIntegration:
             tmp_path,
             ["20260331-110000", "20260401-120000"],
             latest="20260401-120000",
-            reports={"20260331-110000": ["RHAIRFE-1"], "20260401-120000": []},
+            reports={
+                "20260331-110000": {
+                    "report_stage": "pre_submit",
+                    "per_rfe": [{"id": "RHAIRFE-1", "recommendation": "submit"}],
+                },
+                "20260401-120000": [],
+            },
         )
         art_dir = str(tmp_path / "artifacts")
         os.makedirs(art_dir)
@@ -1025,9 +1031,16 @@ class TestBootstrapIntegration:
         r = self._run_bootstrap(results, art_dir, url)
         assert r.returncode == 0, r.stderr
         assert "walking back to 20260331-110000" in r.stderr
+        # The stage warning is evaluated against the report actually USED —
+        # the walked-back one — not the empty tip (which has no stage field).
+        assert "run report 20260331-110000 is report_stage: pre_submit" in r.stderr
 
         name, snap = self._load_snapshot(art_dir)
-        assert name == "issue-snapshot-20260331-110000.yaml"
+        # The FILE keeps the tip run's name: find_previous_snapshot picks the
+        # reverse-lexically newest, so an older-named file would be shadowed
+        # forever by any stale snapshot a pre-walk-back bootstrap wrote, and
+        # a re-run must overwrite that file in place.
+        assert name == "issue-snapshot-20260401-120000.yaml"
         assert snap["bootstrapped_from"] == "20260331-110000"
         assert snap["query_timestamp"] == "2026-03-31T11:00:00Z"
         # Filtered by the older run's report — not include-all.
@@ -1047,6 +1060,14 @@ class TestBootstrapIntegration:
             latest="20260401-120000",
             reports={"20260331-110000": [], "20260401-120000": []},
         )
+        # Real pushed runs carry snapshots. Their presence must NOT trip the
+        # partial-clone guard here: the reports were read and say "processed
+        # nothing" — evidence, not absence.
+        for run in ("20260331-110000", "20260401-120000"):
+            _write(
+                os.path.join(results, run, "auto-fix-runs", f"issue-snapshot-{run}.yaml"),
+                "issues: {}\n",
+            )
         art_dir = str(tmp_path / "artifacts")
         os.makedirs(art_dir)
 
@@ -1103,6 +1124,98 @@ class TestBootstrapIntegration:
 
         r = self._run_bootstrap(results, art_dir, url, extra=["--include-all"])
         assert r.returncode == 0, r.stderr
+        _, snap = self._load_snapshot(art_dir)
+        assert set(snap["issues"]) == {"RHAIRFE-1"}
+        assert all(e == {"hash": e["hash"], "processed": False} for e in snap["issues"].values())
+
+    def test_walk_back_refuses_reportless_dir_with_snapshots(self, tmp_path, mock_jira):
+        """A dir met during walk-back that has snapshots but no report is the
+        aborted-run / partial-clone shape: its work is unknown, so bootstrap
+        hard-stops exactly like the tip-level guard (RHAIFIRST-582 review
+        finding). --include-all remains the escape hatch."""
+        url, server = mock_jira
+        server.issues = {"RHAIRFE-1": "Issue one."}
+        results = _make_results_dir(
+            tmp_path,
+            ["20260330-100000", "20260401-120000"],
+            latest="20260401-120000",
+            reports={"20260401-120000": []},
+        )
+        _write(
+            os.path.join(
+                results,
+                "20260330-100000",
+                "auto-fix-runs",
+                "issue-snapshot-20260330-100000.yaml",
+            ),
+            "issues: {}\n",
+        )
+        art_dir = str(tmp_path / "artifacts")
+        os.makedirs(art_dir)
+
+        r = self._run_bootstrap(results, art_dir, url)
+        assert r.returncode == 1
+        assert "20260330-100000" in r.stderr and "looks partial" in r.stderr
+
+        r = self._run_bootstrap(results, art_dir, url, extra=["--include-all"])
+        assert r.returncode == 0, r.stderr
+        _, snap = self._load_snapshot(art_dir)
+        assert all(e == {"hash": e["hash"], "processed": False} for e in snap["issues"].values())
+
+    def test_walk_back_ignores_replay_dirs_newer_than_latest(self, tmp_path, mock_jira):
+        """Replay dirs pushed with --no-update-latest sit NEWER than the
+        latest symlink target; the walk-back must only look older."""
+        url, server = mock_jira
+        server.issues = {"RHAIRFE-1": "Issue one.", "RHAIRFE-2": "Issue two."}
+        results = _make_results_dir(
+            tmp_path,
+            ["20260331-110000", "20260401-120000", "20260402-130000"],
+            latest="20260401-120000",
+            reports={
+                "20260331-110000": ["RHAIRFE-1"],
+                "20260401-120000": [],
+                "20260402-130000": ["RHAIRFE-2"],
+            },
+        )
+        art_dir = str(tmp_path / "artifacts")
+        os.makedirs(art_dir)
+
+        r = self._run_bootstrap(results, art_dir, url)
+        assert r.returncode == 0, r.stderr
+        assert "walking back to 20260331-110000" in r.stderr
+
+        _, snap = self._load_snapshot(art_dir)
+        assert set(snap["issues"]) == {"RHAIRFE-1"}
+
+    def test_initiative_walk_back_uses_initiative_report_names(self, tmp_path, mock_jira):
+        """The walk-back must read reports through the type config — the
+        initiative report is initiative-run-<ts>.yaml with per_initiative."""
+        url, server = mock_jira
+        server.issues = {"RHOAIENG-1": "Initiative one."}
+        results = _make_results_dir(
+            tmp_path, ["20260331-110000", "20260401-120000"], latest="20260401-120000"
+        )
+        for run, items in (
+            ("20260331-110000", [{"id": "RHOAIENG-1", "recommendation": "submit"}]),
+            ("20260401-120000", []),
+        ):
+            _write(
+                os.path.join(results, run, "auto-fix-runs", f"initiative-run-{run}.yaml"),
+                yaml.dump({"per_initiative": items}),
+            )
+        art_dir = str(tmp_path / "artifacts")
+        os.makedirs(art_dir)
+
+        r = self._run_bootstrap(results, art_dir, url, extra=["--type", "initiative"])
+        assert r.returncode == 0, r.stderr
+        assert "walking back to 20260331-110000" in r.stderr
+
+        snapshot_dir = os.path.join(art_dir, "auto-fix-runs")
+        snaps = [f for f in os.listdir(snapshot_dir) if f.startswith("initiative-snapshot-")]
+        assert snaps == ["initiative-snapshot-20260401-120000.yaml"]
+        with open(os.path.join(snapshot_dir, snaps[0])) as f:
+            snap = yaml.safe_load(f)
+        assert set(snap["issues"]) == {"RHOAIENG-1"}
 
     def test_pre_submit_report_warns(self, tmp_path, mock_jira):
         """A pre_submit tip predates that run's Jira writes — one warning
@@ -1363,6 +1476,14 @@ class TestLoadRunReportRejectsCorruptFiles:
 
         assert ids == set()
         assert isinstance(report, dict)
+
+    def test_non_dict_entry_raises_even_containing_error(self, tmp_path):
+        """A malformed entry must refuse loudly — the error-entry skip is for
+        error DICTS, not for anything whose text happens to contain 'error'."""
+        results, run = self._write_report(tmp_path, 'per_rfe:\n- "RHAIRFE-2 had an error"\n')
+
+        with pytest.raises(ValueError, match="malformed"):
+            _load_run_report(results, run)
 
     def test_error_entries_do_not_count_as_processed(self, tmp_path):
         """An error entry records that the run could NOT dispose of the item —

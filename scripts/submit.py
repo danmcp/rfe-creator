@@ -588,14 +588,20 @@ def main():
             except (ValidationError, Exception) as e:
                 print(f"Warning: cannot read review for {item_id}: {e}", file=sys.stderr)
 
-        if review_data is None:
-            # No readable review means this item never finished the pipeline —
-            # interrupted mid-review, or its review was cleared for a reassess
-            # cycle that never ran. Submitting would push content no review
-            # approved, and marking it processed would freeze it out of every
-            # future run at an unchanged hash (RHAIRFE-3201, RHAIFIRST-582).
-            # Leave it untouched and unprocessed: the next fetch selects it as
-            # NEW, and check_resume finds no passing review to skip it on.
+        if review_path is None:
+            # No review file at all means this item never finished the
+            # pipeline — interrupted mid-review, or its review was cleared
+            # for a reassess cycle that never ran. Submitting would push
+            # content no review approved, and marking it processed would
+            # freeze it out of every future run at an unchanged hash
+            # (RHAIRFE-3201, RHAIFIRST-582). Leave it untouched and
+            # unprocessed: the next fetch selects it as NEW, and check_resume
+            # finds no passing review to skip it on. Deliberately narrower
+            # than review_data is None: a PRESENT but schema-invalid review
+            # keeps the old warn-and-proceed behavior, because check_resume
+            # reads reviews with a laxer bar and would keep skipping the
+            # re-review — leaving such an item unprocessed here would make
+            # it re-selected but never disposed of, forever.
             plan.append(
                 {
                     id_field: item_id,
@@ -617,7 +623,9 @@ def main():
             )
             continue
 
-        rec = review_data.get("recommendation", "submit")
+        rec = "submit"
+        if review_data:
+            rec = review_data.get("recommendation", "submit")
 
         original_labels = task_data.get("original_labels") or []
         attn_reason = None

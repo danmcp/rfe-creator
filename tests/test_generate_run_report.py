@@ -254,6 +254,20 @@ class TestSplitChildrenIncluded:
         assert by_id["RFE-002"]["error"] == "review file not found"
         assert by_id["RFE-002"]["tracker_ref"] is None
 
+    def test_torn_task_file_still_surfaces(self, art_dir):
+        """A task file whose frontmatter was torn mid-write fails the scan —
+        the id must be recovered from the filename instead of vanishing."""
+        _write(
+            f"{art_dir}/rfe-tasks/RHAIRFE-99.md",
+            "---\nrfe_id: RHAIRFE-99\ntitle: Torn\n",  # no closing ---
+        )
+
+        report = build_report([], "20260825-151200", artifacts_dir=art_dir)
+
+        by_id = {e["id"]: e for e in report["per_rfe"]}
+        assert by_id["RHAIRFE-99"]["error"] == "review file not found"
+        assert by_id["RHAIRFE-99"]["tracker_ref"] == "RHAIRFE-99"
+
     def test_task_with_review_is_not_duplicated(self, art_dir):
         """The task-population fold must not double-report ids the review
         scan already covers."""
