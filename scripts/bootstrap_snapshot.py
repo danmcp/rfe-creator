@@ -100,8 +100,7 @@ def _load_run_report(results_dir, run_name, config=None):
         # the explicit loop must not regress it to a bare traceback, and {}
         # must not masquerade as a legitimate empty LIST.
         raise ValueError(
-            f"run report {path} has a non-list {item_key} value "
-            f"({type(items).__name__})"
+            f"run report {path} has a non-list {item_key} value ({type(items).__name__})"
         )
     ids = set()
     for entry in items:
