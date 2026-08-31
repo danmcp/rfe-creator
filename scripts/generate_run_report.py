@@ -79,6 +79,12 @@ SPLIT_REFUSED_PREFIX = "split_refused:"
 # to refusing before any Jira write): children and links may exist in Jira.
 SPLIT_FAILED_PREFIX = "split_submit_failed:"
 
+# submit.py writes this LOCAL-ONLY marker on split parents a phase abort
+# skipped (systemic failure, circuit breaker, dead preflight): nothing was
+# attempted in Jira, but counting them as successful splits would report an
+# abort as an outcome.
+SPLIT_NOT_ATTEMPTED_PREFIX = "split_not_attempted:"
+
 
 def split_children_map(artifacts_dir, config, tasks=None):
     """Map parent ID -> child IDs for split children found in the task dir.
@@ -317,7 +323,7 @@ def build_report(
         if review_error.startswith(SPLIT_REFUSED_PREFIX):
             blocked_reason = data.get("needs_attention_reason") or review_error
             entry["blocked_reason"] = blocked_reason
-        elif review_error.startswith(SPLIT_FAILED_PREFIX):
+        elif review_error.startswith((SPLIT_FAILED_PREFIX, SPLIT_NOT_ATTEMPTED_PREFIX)):
             # A crashed split still carries recommendation: split — counting
             # it as a successful split reported the crash as an outcome
             # (RHAIFIRST-571). Not an `error` entry: the review is fully

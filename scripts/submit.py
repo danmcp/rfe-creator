@@ -214,6 +214,29 @@ def _generate_reports(args):
         print(f"Warning: HTML report generation failed: {result.stderr}", file=sys.stderr)
 
 
+def _record_not_attempted(args, cfg, parent_keys, error):
+    """Local-only record for split parents a phase abort skipped.
+
+    Deliberately touches nothing in Jira — the whole point of aborting is to
+    avoid a fan-out of flags on parents that were never examined. The review
+    error keeps the run report truthful (they count failed, not split) and
+    keeps bootstrap from treating them as disposed. The next nightly
+    re-selects them normally: their snapshot entries stay unprocessed and
+    no quarantine label is applied.
+    """
+    for parent_key in parent_keys:
+        review_path = _find_review(args.artifacts_dir, parent_key, cfg)
+        if not review_path:
+            continue
+        try:
+            update_frontmatter(review_path, {"error": error}, cfg["review_schema"])
+        except Exception as e:
+            print(
+                f"  Warning: could not record not-attempted on {parent_key} ({e}).",
+                file=sys.stderr,
+            )
+
+
 def _record_split_failure(
     server, user, token, parent_key, reason, error, args, cfg, parent_data, quarantine=False
 ):
@@ -425,10 +448,11 @@ def main():
         script_dir = os.path.dirname(os.path.abspath(__file__))
         # Test seam: the loop policy (systemic abort, circuit breaker) cannot
         # be exercised end-to-end with the real script, which classifies
-        # everything it can reach into 0/2/3/4/5.
-        split_script = os.environ.get("RFE_SPLIT_SUBMIT_SCRIPT") or os.path.join(
-            script_dir, "split_submit.py"
-        )
+        # everything it can reach into 0/2/3/4/5. Honored only under pytest —
+        # in production a stray env var must not silently swap the script.
+        split_script = os.path.join(script_dir, "split_submit.py")
+        if os.environ.get("RFE_SPLIT_SUBMIT_SCRIPT") and os.environ.get("PYTEST_CURRENT_TEST"):
+            split_script = os.environ["RFE_SPLIT_SUBMIT_SCRIPT"]
 
         # Preflight one cheap authenticated call: a dead token or unreachable
         # instance must cost one request and one accurate message, not a
@@ -445,6 +469,12 @@ def main():
                     file=sys.stderr,
                 )
                 submit_errors.append(("jira-preflight", f"{type(e).__name__}: {e}"))
+                _record_not_attempted(
+                    args,
+                    cfg,
+                    sorted(split_parents),
+                    "split_not_attempted: Jira preflight failed",
+                )
                 _finish(args, type_label, submit_errors)
 
         # Circuit breaker for failures the exit-code classifier cannot see
@@ -453,8 +483,10 @@ def main():
         # never sys.exit, so _finish() still writes the report.
         consecutive_generic = 0
         abort_splits = False
+        attempted_parents = set()
 
         for parent_key in sorted(split_parents):
+            attempted_parents.add(parent_key)
             cmd = [
                 sys.executable,
                 split_script,
@@ -468,7 +500,12 @@ def main():
                 cmd.append("--dry-run")
             print(f"--- {parent_key} ---")
             result = subprocess.run(cmd)
-            if result.returncode == 0:
+            if result.returncode in (0, 2, 3, 4, 5):
+                # Any CLASSIFIED outcome resets the streak: the breaker's
+                # discriminator is "the classifier missed twice in a row",
+                # and a refusal or per-parent failure in between proves the
+                # classifier is alive (review finding: two isolated signal
+                # deaths separated by a healthy refusal are not a streak).
                 consecutive_generic = 0
             # argparse used to exit 2 as well; split_submit now routes usage
             # errors to 64, so 2 is unambiguously the leaf cap.
@@ -506,15 +543,33 @@ def main():
                 continue
             elif result.returncode == 5:
                 # Systemic: Jira itself is unusable (dead auth, outage). The
-                # parent was never really examined, so no quarantine and no
-                # needs-attention flag — the next nightly retries it once the
-                # instance recovers. Abort the loop: every remaining parent
-                # would fail identically, ~3 requests and ~21s of backoff
-                # each, leaving bogus flags behind.
+                # FAILING parent is recorded and quarantined like a
+                # per-parent failure — the classify wrapper spans discovery
+                # through phase 3, so a mid-run token death can exit 5 AFTER
+                # real Jira writes, and an unquarantined partial split is
+                # re-decomposed by the next nightly into duplicates
+                # (reproduced in review). The Jira half of the record is
+                # best-effort and likely fails here too; the LOCAL review
+                # error is what keeps the report truthful. Then abort: every
+                # remaining parent would fail identically, ~3 requests and
+                # ~21s of backoff each, leaving bogus flags behind.
                 print(
                     f"Error: systemic Jira failure on {parent_key} — aborting the "
                     f"split phase; remaining parents were not attempted.",
                     file=sys.stderr,
+                )
+                _record_split_failure(
+                    server,
+                    user,
+                    token,
+                    parent_key,
+                    "Systemic Jira failure during split submission (exit 5). Jira may "
+                    f"be partially updated — check {parent_key} before retrying.",
+                    "split_submit_failed: exit 5",
+                    args,
+                    cfg,
+                    split_parent_data[parent_key],
+                    quarantine=True,
                 )
                 submit_errors.append((parent_key, "systemic Jira failure (split phase aborted)"))
                 abort_splits = True
@@ -580,6 +635,18 @@ def main():
             print()
 
         if abort_splits:
+            # The parents the abort skipped still carry recommendation:
+            # split with no error — the final report would count them as
+            # SUCCESSFUL splits (review finding). Record a LOCAL-ONLY error
+            # on each: no Jira flags (that fan-out is what the abort
+            # avoids), but the report shows them failed and bootstrap does
+            # not count them disposed.
+            _record_not_attempted(
+                args,
+                cfg,
+                [p for p in sorted(split_parents) if p not in attempted_parents],
+                "split_not_attempted: split phase aborted before this parent",
+            )
             # The report is still written — the parents that succeeded
             # earlier in this loop are real in Jira and this is the only
             # place they are recorded.

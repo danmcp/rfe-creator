@@ -1539,6 +1539,29 @@ class TestLoadRunReportRejectsCorruptFiles:
         with pytest.raises(ValueError, match="malformed"):
             _load_run_report(results, run)
 
+    def test_failed_and_blocked_entries_do_not_count_as_processed(self, tmp_path):
+        """failed_reason (crashed/never-attempted split) and blocked_reason
+        (refusal) entries were not disposed of: the live snapshot leaves
+        them processed:false, and bootstrap recovery must agree or a
+        quarantine-cleared parent would be frozen at processed:true
+        (RHAIFIRST-571 review finding)."""
+        results, run = self._write_report(
+            tmp_path,
+            "per_rfe:\n"
+            "- id: RHAIRFE-1\n"
+            "  recommendation: submit\n"
+            "- id: RHAIRFE-2\n"
+            "  recommendation: split\n"
+            "  failed_reason: 'split_submit_failed: exit 5'\n"
+            "- id: RHAIRFE-3\n"
+            "  recommendation: split\n"
+            "  blocked_reason: too many leaf children\n",
+        )
+
+        ids, _ = _load_run_report(results, run)
+
+        assert ids == {"RHAIRFE-1"}
+
     def test_error_entries_do_not_count_as_processed(self, tmp_path):
         """An error entry records that the run could NOT dispose of the item —
         counting it as processed would freeze it out of every future fetch

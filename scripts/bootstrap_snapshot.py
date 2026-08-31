@@ -109,7 +109,13 @@ def _load_run_report(results_dir, run_name, config=None):
                 f"run report {path} has malformed {item_key} entries: "
                 f"expected a mapping, got {type(entry).__name__}"
             )
-        if "error" in entry:
+        if "error" in entry or "failed_reason" in entry or "blocked_reason" in entry:
+            # None of these were disposed of: error entries could not even be
+            # reported on; failed_reason marks a crashed or never-attempted
+            # split; blocked_reason a refusal. The live snapshot leaves all
+            # of them processed:false — bootstrap recovery must agree, or a
+            # quarantine-cleared parent bootstrapped from this report would
+            # be frozen at processed:true (review finding, RHAIFIRST-571).
             continue
         try:
             ids.add(entry["id"])

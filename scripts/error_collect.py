@@ -148,7 +148,7 @@ def main():
     # split_submit_failed: may be PARTIALLY APPLIED in Jira — its parent is
     # quarantined (RHAIFIRST-570) and an automated retry could mint
     # duplicate children. Both remain in the error history above.
-    non_retryable = ("split_refused:", "split_submit_failed:")
+    non_retryable = ("split_refused:", "split_submit_failed:", "split_not_attempted:")
     retryable_ids = [
         rfe_id
         for rfe_id in error_ids

@@ -877,13 +877,104 @@ class TestSplitLoopPolicy:
         assert r.returncode == 1
         assert "systemic Jira failure" in r.stderr
         assert len(log.read_text().splitlines()) == 1, "remaining parents were attempted"
-        # The parent was never really examined: no quarantine, no flag.
         import urllib.request as _rq
 
+        # The FAILING parent is quarantined: the classify wrapper spans the
+        # phases, so exit 5 can land after real Jira writes (review finding).
         req = _rq.Request(f"{jira.url}/rest/api/3/issue/RHAIRFE-1000?fields=labels")
         with _rq.urlopen(req) as resp:
             labels = set(json.loads(resp.read())["fields"]["labels"])
-        assert "rfe-creator-split-quarantine" not in labels
+        assert "rfe-creator-split-quarantine" in labels
+        fm = _read_frontmatter(f"{art_dir}/rfe-reviews/RHAIRFE-1000-review.md")
+        assert fm["error"] == "split_submit_failed: exit 5"
+        # The never-attempted parents get a LOCAL record only — no Jira flags
+        # (avoiding the fan-out is the point of the abort), but the report
+        # must not count them as successful splits.
+        for key in ("RHAIRFE-2000", "RHAIRFE-3000"):
+            fm = _read_frontmatter(f"{art_dir}/rfe-reviews/{key}-review.md")
+            assert fm["error"].startswith("split_not_attempted:")
+            req = _rq.Request(f"{jira.url}/rest/api/3/issue/{key}?fields=labels")
+            with _rq.urlopen(req) as resp:
+                labels = set(json.loads(resp.read())["fields"]["labels"])
+            assert "rfe-creator-split-quarantine" not in labels
+            assert "rfe-creator-needs-attention" not in labels
+
+    def test_abort_report_counts_skipped_parents_failed_not_split(
+        self, art_dir, jira, tmp_path, monkeypatch
+    ):
+        """The final report after an abort must not claim successful splits
+        for parents that were never attempted (review finding: reproduced
+        results.split == N with zero splits in Jira)."""
+        for key in ("RHAIRFE-1000", "RHAIRFE-2000", "RHAIRFE-3000"):
+            self._parent(jira, art_dir, key, broken=False)
+        stub, log = self._stub_script(tmp_path, 5)
+        monkeypatch.setenv("RFE_SPLIT_SUBMIT_SCRIPT", stub)
+
+        r = _run_submit(
+            art_dir,
+            jira.url,
+            extra_flags=["--generate-report", "--report-timestamp", "20260831-180000"],
+        )
+        assert r.returncode == 1
+
+        report_path = f"{art_dir}/auto-fix-runs/20260831-180000.yaml"
+        assert os.path.exists(report_path), "abort took the report with it"
+        with open(report_path) as f:
+            report = yaml.safe_load(f)
+        assert report["results"]["split"] == 0
+        assert report["results"]["failed"] == 3
+        by_id = {e["id"]: e for e in report["per_rfe"]}
+        assert by_id["RHAIRFE-1000"]["failed_reason"].startswith(
+            "Split submission failed"
+        ) or "exit 5" in str(by_id["RHAIRFE-1000"].get("failed_reason", ""))
+        assert "split_not_attempted" in by_id["RHAIRFE-2000"]["failed_reason"]
+
+    def test_breaker_requires_consecutive_failures(self, art_dir, jira, tmp_path, monkeypatch):
+        """A classified outcome between two unclassified failures proves the
+        classifier is alive — the streak resets (review finding)."""
+        for key in ("RHAIRFE-1000", "RHAIRFE-2000", "RHAIRFE-3000"):
+            self._parent(jira, art_dir, key, broken=False)
+        log = tmp_path / "invocations.log"
+        stub = tmp_path / "stub_split_submit.py"
+        # The middle outcome is a CLASSIFIED refusal (2), not a success:
+        # this is what discriminates "reset on any classified outcome" from
+        # "reset on success only" — a healthy refusal between two signal
+        # deaths proves the classifier is alive.
+        stub.write_text(
+            "import sys\n"
+            f"open({str(log)!r}, 'a').write(sys.argv[1] + chr(10))\n"
+            "sys.exit(2 if sys.argv[1] == 'RHAIRFE-2000' else 7)\n"
+        )
+        monkeypatch.setenv("RFE_SPLIT_SUBMIT_SCRIPT", str(stub))
+
+        r = _run_submit(art_dir, jira.url)
+        assert r.returncode == 1
+        assert "consecutive unclassified" not in r.stderr, "breaker tripped on a broken streak"
+        assert len(log.read_text().splitlines()) == 3
+
+    def test_seam_is_inert_outside_pytest(self, art_dir, jira, tmp_path):
+        """RFE_SPLIT_SUBMIT_SCRIPT must not swap the script in production
+        (review finding): without PYTEST_CURRENT_TEST the real script runs."""
+        self._parent(jira, art_dir, "RHAIRFE-1000", broken=True)
+        stub, log = self._stub_script(tmp_path, 0)
+
+        env = {
+            **os.environ,
+            "JIRA_SERVER": jira.url,
+            "JIRA_USER": "admin",
+            "JIRA_TOKEN": "admin",
+            "RFE_SPLIT_SUBMIT_SCRIPT": str(stub),
+        }
+        env.pop("PYTEST_CURRENT_TEST", None)
+        r = subprocess.run(
+            [sys.executable, SCRIPT, "--artifacts-dir", art_dir],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert not log.exists(), "seam activated outside pytest"
+        # The real script ran and hit the dead-end shape (exit 4 recorded).
+        assert r.returncode == 1
 
     def test_breaker_trips_after_two_consecutive_unclassified_failures(
         self, art_dir, jira, tmp_path, monkeypatch
