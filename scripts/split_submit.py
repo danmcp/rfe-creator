@@ -135,16 +135,21 @@ def _extract_adf_text(node):
     return _extract_adf_text(node.get("content", []))
 
 
-def _child_marker_label(label_prefix, child_id):
-    """Deterministic per-child label applied at creation.
+def _child_marker_label(label_prefix, parent_key, child_id):
+    """Deterministic per-(parent, child) label applied at creation.
 
     This is the recovery signal that exists from the instant the child does:
     a process death between create_issue and the link/comment used to mint a
-    ticket no future run could find (RHAIFIRST-570). The label also carries
-    the child's local id, so recovery maps by identity instead of position —
-    adding, removing or renaming a sibling between runs cannot misalign it.
+    ticket no future run could find (RHAIFIRST-570). It carries the child's
+    local id, so recovery maps by identity instead of position — and the
+    PARENT key, because local ids are workspace-scoped and restart at 001 in
+    every fresh CI run while the labels persist forever: an id-only label
+    would let a new split adopt a stale child of a different parent
+    (reproduced live in review). Adoption is additionally title-guarded for
+    the one collision this scoping cannot express: the same parent re-split
+    with a different decomposition that reuses the same local ids.
     """
-    return f"{label_prefix}-split-child-{child_id.lower()}"
+    return f"{label_prefix}-split-child-{parent_key.lower()}-{child_id.lower()}"
 
 
 class SubmissionState:
@@ -197,12 +202,20 @@ def discover_state(server, user, token, parent_key, expected_children, config):
     for comment in comments:
         body_text = _extract_adf_text(comment.get("body", {}))
 
-        archival_match = re.search(
-            rf"{marker} Split child (\S+) \(\d+ of \d+\):", body_text
-        ) or re.search(rf"{marker} Split child (\d+) of \d+:", body_text)
-        if archival_match:
-            ref = archival_match.group(1)
-            child_id = _id_at(int(ref)) if ref.isdigit() else ref
+        archival_match = re.search(rf"{marker} Split child (\S+) \(\d+ of \d+\):", body_text)
+        legacy_archival = re.search(rf"{marker} Split child (\d+) of (\d+):", body_text)
+        if archival_match or legacy_archival:
+            if archival_match:
+                child_id = archival_match.group(1)
+            else:
+                # Positional legacy comment: only trustworthy when the child
+                # count it recorded still matches — a shrunk or regrown set
+                # re-numbers positions and would misbind (caught in review).
+                child_id = (
+                    _id_at(int(legacy_archival.group(1)))
+                    if int(legacy_archival.group(2)) == len(ids_in_order)
+                    else None
+                )
             if child_id:
                 state.phase1_done[child_id] = comment["id"]
             continue
@@ -212,11 +225,19 @@ def discover_state(server, user, token, parent_key, expected_children, config):
         )
         if confirm_match:
             created_key, child_id = confirm_match.group(1), confirm_match.group(2)
+            if child_id not in set(ids_in_order) and created_key in set(ids_in_order):
+                # The artifact was already renamed to the Jira key by a run
+                # that died after the rename: the current scan lists the
+                # child under its KEY, not its local id. Without this, the
+                # resume would re-post its archival comment and re-adopt it
+                # through the link signal.
+                child_id = created_key
             state.phase2_done[child_id] = {
                 "key": created_key,
                 "linked": True,
                 "commented": True,
             }
+            state.phase1_done.setdefault(child_id, comment["id"])
             continue
 
         legacy_confirm = re.search(
@@ -224,7 +245,11 @@ def discover_state(server, user, token, parent_key, expected_children, config):
             body_text,
         )
         if legacy_confirm:
-            child_id = _id_at(int(legacy_confirm.group(2)))
+            child_id = (
+                _id_at(int(legacy_confirm.group(2)))
+                if int(legacy_confirm.group(3)) == len(ids_in_order)
+                else None
+            )
             if child_id and child_id not in state.phase2_done:
                 state.phase2_done[child_id] = {
                     "key": legacy_confirm.group(1),
@@ -266,13 +291,14 @@ def discover_state(server, user, token, parent_key, expected_children, config):
     #     the link and the comment — previously undiscoverable, so the next
     #     run minted a duplicate (RHAIFIRST-570).
     label_prefix = config["label_prefix"]
+    title_by_id = {child_id: title for (child_id, title, _, _) in expected_children}
     unmapped = [cid for cid in ids_in_order if cid not in state.phase2_done]
     if unmapped:
-        markers = [_child_marker_label(label_prefix, cid) for cid in unmapped]
+        markers = [_child_marker_label(label_prefix, parent_key, cid) for cid in unmapped]
         marker_by_label = dict(zip(markers, unmapped))
-        jql = f"labels in ({', '.join(markers)})"
+        jql = f"project = {config['project']} AND labels in ({', '.join(markers)})"
         try:
-            found = search_issues(server, user, token, jql, "labels,issuelinks")
+            found = search_issues(server, user, token, jql, "labels,issuelinks,summary")
         except Exception as e:
             # Best-effort net: a search failure must not turn recovery into
             # an abort — the comment and link signals above still stand.
@@ -285,6 +311,17 @@ def discover_state(server, user, token, parent_key, expected_children, config):
                 continue
             child_id = hit_ids[0]
             if child_id in state.phase2_done:
+                continue
+            # Title guard: a quarantine-cleared parent re-split with a
+            # DIFFERENT decomposition legitimately reuses local ids — the
+            # stale child from the abandoned attempt must not be adopted
+            # for new scope it does not contain.
+            if hit.get("fields", {}).get("summary", "") != title_by_id.get(child_id):
+                print(
+                    f"  Warning: {hit['key']} carries the marker for {child_id} but "
+                    f"its title does not match the expected child — not adopting it",
+                    file=sys.stderr,
+                )
                 continue
             linked = any(
                 link.get("type", {}).get("name") == "Work item split"
@@ -388,6 +425,17 @@ def phase2_create_link(
                 f"  Phase 2: Child {child_id} ({idx}/{total}) found as {child_key} "
                 f"(linked: {done['linked']}, confirmed: {done['commented']}) — completing"
             )
+            if dry_run:
+                # Discovery runs whenever credentials exist, dry run or not —
+                # completing here would write to Jira during a run the caller
+                # expects to be read-only (caught in review).
+                if not done["linked"]:
+                    print(f"           Would link {child_key} to {parent_key}")
+                if not done["commented"]:
+                    print(f"           Would post confirmation for {child_key}")
+                done["linked"] = True
+                done["commented"] = True
+                continue
             if not done["linked"]:
                 create_issue_link(server, user, token, "Work item split", parent_key, child_key)
                 print(f"           Linked {child_key} to {parent_key}")
@@ -418,7 +466,7 @@ def phase2_create_link(
         labels = [
             f"{label_prefix}-auto-created",
             f"{label_prefix}-split-result",
-            _child_marker_label(label_prefix, child_id),
+            _child_marker_label(label_prefix, parent_key, child_id),
         ]
 
         review_path = find_review(artifacts_dir, child_id)
@@ -799,13 +847,19 @@ def main():
     phase3_close(server, user, token, args.parent_key, children, state, config, args.dry_run)
     print()
 
-    # Post-submit: update frontmatter and rename files
+    # Post-submit: update frontmatter and rename files. Never under dry-run:
+    # recovery can adopt children with REAL keys (not the -DRY sentinel), and
+    # renaming local artifacts is a write the caller did not ask for.
     rename_fn = config["rename_fn"]
     project = config["project"]
     for child_id, title, priority, artifact_path in children:
         assigned = state.phase2_done.get(child_id)
         assigned_key = assigned["key"] if assigned else None
-        if not assigned_key or assigned_key == f"{project}-DRY":
+        if args.dry_run or not assigned_key or assigned_key == f"{project}-DRY":
+            continue
+        if assigned_key == child_id:
+            # Already renamed by a run that died between the rename and the
+            # index rebuild — nothing to do.
             continue
 
         rename_fn(args.artifacts_dir, child_id, assigned_key)

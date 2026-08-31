@@ -131,7 +131,7 @@ class TestFullRun:
         assert len(created) == 2
         assert _split_links(jira.url, PARENT_KEY) == created
         # Marker labels present: the from-birth recovery signal.
-        marked = _search_keys(jira.url, "labels = rfe-creator-split-child-rfe-001")
+        marked = _search_keys(jira.url, "labels = rfe-creator-split-child-rhairfe-1000-rfe-001")
         assert len(marked) == 1
         # Parent closed.
         issue = get_issue(jira.url, "admin", "admin", PARENT_KEY, ["status"])
@@ -247,10 +247,156 @@ class TestSiblingChangesBetweenRuns:
         assert r.returncode == 0, r.stderr + r.stdout
 
         # RFE-001 not duplicated; three children total, all linked.
-        assert len(_search_keys(jira.url, "labels = rfe-creator-split-child-rfe-001")) == 1
+        assert (
+            len(_search_keys(jira.url, "labels = rfe-creator-split-child-rhairfe-1000-rfe-001"))
+            == 1
+        )
         created = _search_keys(jira.url, "labels = rfe-creator-split-result")
         assert len(created) == 3
         assert _split_links(jira.url, PARENT_KEY) == created
+
+
+class TestStaleMarkerLabels:
+    """Marker labels persist forever and local ids recycle across workspaces —
+    adoption must be parent-scoped and title-guarded (review findings)."""
+
+    def test_fresh_split_does_not_adopt_another_parents_children(self, art_dir, jira, tmp_path):
+        """Run N split RHAIRFE-1000 -> children keep their marker labels.
+        Run N+1 (fresh workspace) splits RHAIRFE-2000 reusing local ids
+        RFE-001/RFE-002 — it must create ITS OWN children, not adopt run N's
+        (reproduced live against the id-only label scheme in review)."""
+        _setup_parent(jira, art_dir)
+        r = _run_split(art_dir, jira.url)
+        assert r.returncode == 0, r.stderr + r.stdout
+        run_n_children = _search_keys(jira.url, "labels = rfe-creator-split-result")
+        assert len(run_n_children) == 2
+
+        # Fresh workspace for a DIFFERENT parent, same local ids.
+        ws2 = tmp_path / "run-n-plus-1"
+        for d in ["rfe-tasks", "rfe-reviews", "rfe-originals"]:
+            os.makedirs(ws2 / d)
+        jira.create("RHAIRFE-2000", "Other parent", "Other content.")
+        _write(
+            str(ws2 / "rfe-tasks/RHAIRFE-2000.md"),
+            "---\nrfe_id: RHAIRFE-2000\ntitle: Other parent\n"
+            "priority: Major\nstatus: Archived\n---\n\nOther content.\n",
+        )
+        _write(str(ws2 / "rfe-originals/RHAIRFE-2000.md"), "Other content.")
+        for cid in ("RFE-001", "RFE-002"):
+            # Deliberately IDENTICAL titles to run N's children: the title
+            # guard must not be what saves us here — only the parent-scoped
+            # label keeps the search from seeing run N's children at all.
+            _write(
+                str(ws2 / f"rfe-tasks/{cid}.md"),
+                "---\nrfe_id: " + cid + "\ntitle: Child " + cid + "\n"
+                "priority: Major\nstatus: Ready\n"
+                "parent_key: RHAIRFE-2000\n---\n\nDifferent content.\n",
+            )
+
+        env = {**os.environ, "JIRA_SERVER": jira.url, "JIRA_USER": "admin", "JIRA_TOKEN": "admin"}
+        r = subprocess.run(
+            [sys.executable, SCRIPT, "RHAIRFE-2000", "--artifacts-dir", str(ws2)],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert r.returncode == 0, r.stderr + r.stdout
+
+        # Four distinct children exist; run N's were not adopted or re-linked.
+        all_children = _search_keys(jira.url, "labels = rfe-creator-split-result")
+        assert len(all_children) == 4
+        assert set(_split_links(jira.url, "RHAIRFE-2000")).isdisjoint(run_n_children)
+
+    def test_resplit_with_new_decomposition_is_not_bound_to_stale_child(
+        self, art_dir, jira, monkeypatch
+    ):
+        """Same parent, quarantine cleared, re-split with DIFFERENT scope
+        reusing the same local id: the stale child carries the matching
+        marker label but the wrong title — the title guard must refuse it."""
+        children = _setup_parent(jira, art_dir, child_ids=("RFE-001",))
+        config = SPLIT_CONFIG["rfe"]
+        state = discover_state(jira.url, "admin", "admin", PARENT_KEY, children, config)
+        phase1_persist(jira.url, "admin", "admin", PARENT_KEY, children, state, config, False)
+        original = split_submit.create_issue_link
+
+        def dying(*a, **k):
+            raise RuntimeError("died before link")
+
+        monkeypatch.setattr(split_submit, "create_issue_link", dying)
+        with pytest.raises(RuntimeError):
+            phase2_create_link(
+                jira.url, "admin", "admin", PARENT_KEY, children, state, art_dir, config, False
+            )
+        monkeypatch.setattr(split_submit, "create_issue_link", original)
+
+        # New decomposition: same local id, different title.
+        _write(
+            f"{art_dir}/rfe-tasks/RFE-001.md",
+            CHILD_TASK.format(child_id="RFE-001", title="Reworked scope"),
+        )
+        new_children = [("RFE-001", "Reworked scope", "Major", f"{art_dir}/rfe-tasks/RFE-001.md")]
+        state = discover_state(jira.url, "admin", "admin", PARENT_KEY, new_children, config)
+        assert "RFE-001" not in state.phase2_done, "stale child adopted despite title mismatch"
+
+        phase2_create_link(
+            jira.url, "admin", "admin", PARENT_KEY, new_children, state, art_dir, config, False
+        )
+        # Fresh child created for the new scope; the stale one stays unlinked.
+        assert len(_search_keys(jira.url, "labels = rfe-creator-split-result")) == 2
+        assert len(_split_links(jira.url, PARENT_KEY)) == 1
+
+    def test_dry_run_completion_writes_nothing(self, art_dir, jira, monkeypatch):
+        """Discovery runs whenever credentials exist. A dry run that finds a
+        partially-applied child must report what it WOULD complete — not
+        link, comment, or rename (review finding: write-under-dry-run)."""
+        children = _setup_parent(jira, art_dir, child_ids=("RFE-001",))
+        config = SPLIT_CONFIG["rfe"]
+        state = discover_state(jira.url, "admin", "admin", PARENT_KEY, children, config)
+        phase1_persist(jira.url, "admin", "admin", PARENT_KEY, children, state, config, False)
+
+        def dying(*a, **k):
+            raise RuntimeError("died before link")
+
+        monkeypatch.setattr(split_submit, "create_issue_link", dying)
+        with pytest.raises(RuntimeError):
+            phase2_create_link(
+                jira.url, "admin", "admin", PARENT_KEY, children, state, art_dir, config, False
+            )
+        monkeypatch.undo()
+
+        comments_before = len(get_comments(jira.url, "admin", "admin", PARENT_KEY))
+
+        env = {**os.environ, "JIRA_SERVER": jira.url, "JIRA_USER": "admin", "JIRA_TOKEN": "admin"}
+        r = subprocess.run(
+            [sys.executable, SCRIPT, PARENT_KEY, "--dry-run", "--artifacts-dir", art_dir],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert r.returncode == 0, r.stderr + r.stdout
+        assert "Would link" in r.stdout
+
+        assert _split_links(jira.url, PARENT_KEY) == []
+        assert len(get_comments(jira.url, "admin", "admin", PARENT_KEY)) == comments_before
+        assert os.path.exists(f"{art_dir}/rfe-tasks/RFE-001.md"), "dry run renamed artifacts"
+
+
+class TestRerunIsANoOp:
+    def test_second_run_after_success_changes_nothing(self, art_dir, jira):
+        """After the rename loop, children are listed under their Jira keys:
+        the confirmation comments must still map (via the created key), or a
+        resume re-posts archival comments and re-adopts children."""
+        _setup_parent(jira, art_dir)
+        r = _run_split(art_dir, jira.url)
+        assert r.returncode == 0, r.stderr + r.stdout
+        comments_after_first = len(get_comments(jira.url, "admin", "admin", PARENT_KEY))
+        children_after_first = _search_keys(jira.url, "labels = rfe-creator-split-result")
+
+        r = _run_split(art_dir, jira.url)
+        assert r.returncode == 0, r.stderr + r.stdout
+
+        assert len(get_comments(jira.url, "admin", "admin", PARENT_KEY)) == comments_after_first
+        assert _search_keys(jira.url, "labels = rfe-creator-split-result") == children_after_first
 
 
 class TestLegacyComments:
@@ -282,3 +428,25 @@ class TestLegacyComments:
         assert state.phase1_done.get("RFE-001")
         assert state.phase2_done["RFE-001"]["key"] == "RHAIRFE-77"
         assert "RFE-002" not in state.phase2_done
+
+    def test_positional_comments_ignored_when_the_set_shrank(self, art_dir, jira):
+        """A legacy comment recorded '1 of 2'; the decomposition was revised
+        to ONE child. Positional mapping through the new ordering would bind
+        the old ticket to different content — the total mismatch must make
+        the comment inert instead (review finding)."""
+        children = _setup_parent(jira, art_dir, child_ids=("RFE-001",))
+        jira.create("RHAIRFE-77", "Old child A", "Old content.")
+        add_comment(
+            jira.url,
+            "admin",
+            "admin",
+            PARENT_KEY,
+            text_to_adf_paragraph(
+                "[RFE Creator] Created as RHAIRFE-77, linked to parent. (ref: child 1 of 2)"
+            ),
+        )
+
+        config = SPLIT_CONFIG["rfe"]
+        state = discover_state(jira.url, "admin", "admin", PARENT_KEY, children, config)
+
+        assert "RFE-001" not in state.phase2_done
