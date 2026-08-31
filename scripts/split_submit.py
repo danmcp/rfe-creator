@@ -232,12 +232,16 @@ def discover_state(server, user, token, parent_key, expected_children, config):
                 # resume would re-post its archival comment and re-adopt it
                 # through the link signal.
                 child_id = created_key
-            state.phase2_done[child_id] = {
-                "key": created_key,
-                "linked": True,
-                "commented": True,
-            }
-            state.phase1_done.setdefault(child_id, comment["id"])
+            if child_id in set(ids_in_order):
+                # A comment naming a child that no longer exists (removed in
+                # a re-split) must not inflate phase2_done — phase3's count
+                # guard compares its size against the CURRENT total.
+                state.phase2_done[child_id] = {
+                    "key": created_key,
+                    "linked": True,
+                    "commented": True,
+                }
+                state.phase1_done.setdefault(child_id, comment["id"])
             continue
 
         legacy_confirm = re.search(
@@ -296,7 +300,12 @@ def discover_state(server, user, token, parent_key, expected_children, config):
     if unmapped:
         markers = [_child_marker_label(label_prefix, parent_key, cid) for cid in unmapped]
         marker_by_label = dict(zip(markers, unmapped))
-        jql = f"project = {config['project']} AND labels in ({', '.join(markers)})"
+        # Quote every literal: label values embed parent_key and child ids
+        # that come from frontmatter/CLI, and an unquoted `)` or `AND` would
+        # change the query semantics (CWE-943). The values themselves cannot
+        # contain quotes — ids are schema-validated key patterns.
+        quoted = ", ".join(f'"{m}"' for m in markers)
+        jql = f'project = "{config["project"]}" AND labels in ({quoted})'
         try:
             found = search_issues(server, user, token, jql, "labels,issuelinks,summary")
         except Exception as e:

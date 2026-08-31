@@ -12,6 +12,8 @@ import json
 import os
 import subprocess
 import sys
+import urllib.parse
+import urllib.request
 
 import pytest
 
@@ -100,8 +102,6 @@ def _run_split(art_dir, url):
 
 
 def _search_keys(url, jql):
-    import urllib.parse
-
     req = urllib.request.Request(
         f"{url}/rest/api/3/search/jql?jql={urllib.parse.quote(jql, safe='')}&fields=summary"
     )

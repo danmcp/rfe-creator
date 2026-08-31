@@ -248,15 +248,25 @@ def _record_split_failure(
         "attn_reason": reason,
         "original_labels": parent_data.get("original_labels") or [],
     }
+    # The labels go FIRST and in their own try: the quarantine label is the
+    # load-bearing write — it is what stops the nightly from re-selecting a
+    # partially-applied parent — and it must not be lost to a failure in the
+    # advisory comment posting (CodeRabbit, CWE-703).
     try:
-        _post_needs_attention_comment(
-            server, user, token, entry, {parent_key: parent_key}, args.dry_run, cfg
-        )
         if not args.dry_run:
             flag_labels = [f"{cfg['label_prefix']}-needs-attention"]
             if quarantine:
                 flag_labels.append(f"{cfg['label_prefix']}-split-quarantine")
             add_labels(server, user, token, parent_key, flag_labels)
+    except Exception as e:
+        print(
+            f"  Warning: could not label {parent_key} in Jira ({e}). Recorded locally.",
+            file=sys.stderr,
+        )
+    try:
+        _post_needs_attention_comment(
+            server, user, token, entry, {parent_key: parent_key}, args.dry_run, cfg
+        )
     except Exception as e:
         print(
             f"  Warning: could not flag {parent_key} in Jira ({e}). Recorded locally.",

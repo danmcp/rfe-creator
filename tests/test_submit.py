@@ -1007,3 +1007,41 @@ class TestSplitFailureIsRecorded:
         assert os.path.exists(yaml_path), (
             "the failure took the run report with it — the successes before it are unrecorded"
         )
+
+
+class TestRecordSplitFailureResilience:
+    """The quarantine label is the load-bearing write — it must land even
+    when the advisory needs-attention comment fails (CodeRabbit on #169)."""
+
+    def test_quarantine_label_survives_comment_failure(self, monkeypatch, tmp_path):
+        from types import SimpleNamespace
+
+        import submit as submit_mod
+
+        added = []
+        monkeypatch.setattr(
+            submit_mod, "add_labels", lambda srv, u, t, key, labels: added.extend(labels)
+        )
+
+        def boom(*a, **k):
+            raise RuntimeError("comment rejected")
+
+        monkeypatch.setattr(submit_mod, "_post_needs_attention_comment", boom)
+
+        args = SimpleNamespace(artifacts_dir=str(tmp_path), dry_run=False)
+        cfg = submit_mod.TYPE_CONFIGS["rfe"]
+        submit_mod._record_split_failure(
+            "https://x",
+            "u",
+            "t",
+            "RHAIRFE-1",
+            "reason",
+            "split_submit_failed: exit 4",
+            args,
+            cfg,
+            {"original_labels": []},
+            quarantine=True,
+        )
+
+        assert "rfe-creator-split-quarantine" in added
+        assert "rfe-creator-needs-attention" in added
