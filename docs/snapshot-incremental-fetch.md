@@ -382,10 +382,22 @@ has prior CI run history, before the first incremental fetch.
 
 The bootstrap snapshot accounts for:
 - **Run-report filtering**: Only issues listed in the latest run
-  report's `per_rfe` list are included in the snapshot. Issues that
-  were open but not processed by the previous run remain absent,
-  correctly surfacing as NEW on the first incremental fetch. If no
-  run report is found, all fetched issues are included as a fallback.
+  report's `per_rfe` list are included in the snapshot — excluding
+  error entries, which record that the run could NOT dispose of the
+  item. Issues that were open but not processed by the previous run
+  remain absent, correctly surfacing as NEW on the first incremental
+  fetch. If the latest report has an EMPTY item list (a legitimate
+  zero-count run), bootstrap walks back to the newest run that
+  processed anything and reconstructs state as of that run — the
+  empty run's newer timestamp would hide edits made between the two.
+  When every report in history is empty, bootstrap snapshots every
+  fetched issue marked unprocessed, without requiring `--include-all`:
+  the reports were read and state exactly that nothing was processed,
+  which is evidence, not absence.
+  If no run report is found at all, all fetched issues are included
+  as a fallback, marked unprocessed. A `report_stage: pre_submit`
+  report is used but warned about: it predates that run's Jira
+  writes, so split children may appear under local ids.
 - Historical descriptions at the run time (for externally modified issues)
 - Current descriptions for auto-revised issues (our own submissions)
 - Exclusion of issues that were out of scope (Done) at run time

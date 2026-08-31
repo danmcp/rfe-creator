@@ -617,6 +617,43 @@ class TestSnapshotUpdate:
         entry = data["issues"]["RHAIRFE-1234"]
         assert entry == {"hash": "existing", "processed": True}
 
+    def test_unreviewed_item_left_unprocessed(self, art_dir, jira):
+        """An item without a readable review is not disposed of: no Jira
+        write, no processed flag — so the next fetch re-selects it instead
+        of freezing it at an unchanged hash (RHAIRFE-3201, RHAIFIRST-582)."""
+        # A selected issue enters the run unprocessed (cmd_fetch only ever
+        # resets or preserves the flag; submit.py alone sets it).
+        snap_path = self._seed_snapshot(
+            art_dir,
+            {
+                "RHAIRFE-1234": {"hash": "hash-a", "processed": False},
+                "RHAIRFE-5678": {"hash": "hash-b", "processed": False},
+            },
+        )
+        jira.create("RHAIRFE-1234", "Test RFE", "Original.")
+        jira.create("RHAIRFE-5678", "Other RFE", "Original.")
+        for key in ("RHAIRFE-1234", "RHAIRFE-5678"):
+            _write(f"{art_dir}/rfe-originals/{key}.md", "Original.")
+            _write(
+                f"{art_dir}/rfe-tasks/{key}.md",
+                f"---\nrfe_id: {key}\ntitle: Test RFE\n"
+                "priority: Major\nstatus: Ready\n---\nRevised.",
+            )
+        # Review only for 5678 — 1234 is the interrupted, unreviewed shape.
+        _write(f"{art_dir}/rfe-reviews/RHAIRFE-5678-review.md", _review("RHAIRFE-5678"))
+
+        r = _run_submit(art_dir, jira.url)
+        assert r.returncode == 0, r.stderr
+        assert "no readable review" in r.stdout
+
+        with open(snap_path) as f:
+            data = yaml.safe_load(f)
+        # The reviewed item was disposed of normally...
+        assert data["issues"]["RHAIRFE-5678"]["processed"] is True
+        # ...the unreviewed one was left exactly as it was: unchanged hash,
+        # still unprocessed, so the next fetch re-selects it.
+        assert data["issues"]["RHAIRFE-1234"] == {"hash": "hash-a", "processed": False}
+
     def test_dry_run_does_not_update_snapshot(self, art_dir, jira):
         """Dry-run must not write processed flags or hashes to snapshot."""
         snap_path = self._seed_snapshot(art_dir, {"RHAIRFE-1234": "existing"})

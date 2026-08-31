@@ -11,6 +11,7 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from artifact_utils import (
+    _is_companion_file,
     find_review_file,
     read_frontmatter,
     resolve_ids,
@@ -24,6 +25,7 @@ TYPE_CONFIG = {
     "rfe": {
         "score_fields": ["what", "why", "open_to_how", "not_a_task", "right_sized"],
         "reviews_dir": "rfe-reviews",
+        "tasks_dir": "rfe-tasks",
         "item_key": "per_rfe",
         "output_prefix": "",
         "extra_entry_fields": ["needs_attention"],
@@ -43,6 +45,7 @@ TYPE_CONFIG = {
             "right_sized",
         ],
         "reviews_dir": "initiative-reviews",
+        "tasks_dir": "initiatives",
         "item_key": "per_initiative",
         "output_prefix": "initiative-run-",
         "extra_entry_fields": ["alignment", "feasibility", "needs_attention"],
@@ -91,6 +94,28 @@ def split_children_map(artifacts_dir, config, tasks=None):
         if parent and parent.startswith(config["child_parent_prefixes"]):
             children_map.setdefault(parent, []).append(task_data[config["id_field"]])
     return children_map
+
+
+def _ids_from_filenames(artifacts_dir, config):
+    """Ids recoverable from task FILENAMES ({ID}.md).
+
+    The frontmatter scan silently skips a task file torn mid-write (the
+    orchestrator died while writing it), which would make the item vanish
+    from the report exactly like a missing review does — the filename is
+    the one part of a torn task that survives (RHAIFIRST-582).
+    """
+    tasks_dir = os.path.join(artifacts_dir, config["tasks_dir"])
+    if not os.path.isdir(tasks_dir):
+        return []
+    prefixes = (config["local_prefix"], config["tracker_prefix"])
+    ids = []
+    for filename in os.listdir(tasks_dir):
+        if not filename.endswith(".md") or _is_companion_file(filename):
+            continue
+        tid = filename[:-3]
+        if tid.startswith(prefixes):
+            ids.append(tid)
+    return ids
 
 
 def _task_status_map(tasks, config):
@@ -142,6 +167,21 @@ def build_report(
     status_map = _task_status_map(tasks, config)
     all_children = [c for kids in children_map.values() for c in kids]
     expanded_ids = list(ids) + [c for c in all_children if c not in ids]
+    # ...and every task file the run left behind. The CLI's default population
+    # scans the REVIEWS directory, so an item whose review was never written —
+    # or was cleared for a reassess cycle that never ran — simply vanished
+    # from the report while its task file sat in the run: RHAIRFE-3201 was
+    # marked processed yet absent from all 77 entries (RHAIFIRST-582). Tasks
+    # without a review land in the review-file-not-found error path below.
+    known = set(expanded_ids)
+    expanded_ids += [tid for tid in status_map if tid not in known]
+    known.update(status_map)
+    # A task file torn mid-write (orchestrator killed) fails the frontmatter
+    # scan and would vanish the same way — recover the id from the filename,
+    # which is {ID}.md for every task the pipeline writes.
+    expanded_ids += sorted(
+        tid for tid in _ids_from_filenames(artifacts_dir, config) if tid not in known
+    )
 
     per_item = []
     before_totals = {f: [] for f in score_fields}

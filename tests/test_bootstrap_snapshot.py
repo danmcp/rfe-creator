@@ -287,11 +287,13 @@ def mock_jira():
     server.shutdown()
 
 
-def _make_results_dir(tmp_path, run_names, latest=None, processed_ids=None):
+def _make_results_dir(tmp_path, run_names, latest=None, processed_ids=None, reports=None):
     """Create a results directory with run dirs.
 
     If processed_ids is provided and latest is set, writes a run report
-    with per_rfe entries for those IDs.
+    with per_rfe entries for those IDs. `reports` writes one report per
+    run name: a list becomes per_rfe entries, a dict is dumped as the
+    whole report, a string is written raw (for corrupt-report tests).
     """
     results = str(tmp_path / "results")
     os.makedirs(results)
@@ -300,10 +302,20 @@ def _make_results_dir(tmp_path, run_names, latest=None, processed_ids=None):
     if latest:
         os.symlink(latest, os.path.join(results, "latest"))
     if processed_ids is not None and latest:
-        report_dir = os.path.join(results, latest, "auto-fix-runs")
+        reports = {**(reports or {}), latest: processed_ids}
+    for name, spec in (reports or {}).items():
+        report_dir = os.path.join(results, name, "auto-fix-runs")
         os.makedirs(report_dir, exist_ok=True)
-        report = {"per_rfe": [{"id": pid, "recommendation": "submit"} for pid in processed_ids]}
-        with open(os.path.join(report_dir, f"{latest}.yaml"), "w") as f:
+        path = os.path.join(report_dir, f"{name}.yaml")
+        if isinstance(spec, str):
+            with open(path, "w") as f:
+                f.write(spec)
+            continue
+        if isinstance(spec, dict):
+            report = spec
+        else:
+            report = {"per_rfe": [{"id": pid, "recommendation": "submit"} for pid in spec]}
+        with open(path, "w") as f:
             yaml.dump(report, f)
     return results
 
@@ -963,53 +975,316 @@ class TestBootstrapIntegration:
         assert snap["issues"]["RHAIRFE-2"] == historical_hash_2
         assert snap["issues"]["RHAIRFE-3"] == historical_hash_3
 
-    def test_empty_per_rfe_includes_all(self, tmp_path, mock_jira):
-        """Run report with empty per_rfe falls back to including all."""
-        url, server = mock_jira
-        server.issues = {
-            "RHAIRFE-1": "Issue one.",
-            "RHAIRFE-2": "Issue two.",
-        }
-        # processed_ids=[] → run report exists but per_rfe is empty
-        results = _make_results_dir(
-            tmp_path, ["20260401-120000"], latest="20260401-120000", processed_ids=[]
-        )
-        art_dir = str(tmp_path / "artifacts")
-        os.makedirs(art_dir)
-
+    def _run_bootstrap(self, results, art_dir, url, extra=None):
         env = {
             **os.environ,
             "JIRA_SERVER": url,
             "JIRA_USER": "test@example.com",
             "JIRA_TOKEN": "test-token",
         }
-        r = subprocess.run(
-            [
-                sys.executable,
-                SCRIPT,
-                "--results-dir",
-                results,
-                "--artifacts-dir",
-                art_dir,
-                "project = RHAIRFE",
-            ],
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-        assert r.returncode == 0, r.stderr
-        assert "no run report" in r.stderr
+        cmd = [
+            sys.executable,
+            SCRIPT,
+            "--results-dir",
+            results,
+            "--artifacts-dir",
+            art_dir,
+        ]
+        if extra:
+            cmd.extend(extra)
+        cmd.append("project = RHAIRFE")
+        return subprocess.run(cmd, capture_output=True, text=True, env=env)
 
+    @staticmethod
+    def _load_snapshot(art_dir):
         snapshot_dir = os.path.join(art_dir, "auto-fix-runs")
         snapshots = [f for f in os.listdir(snapshot_dir) if f.startswith("issue-snapshot-")]
+        assert len(snapshots) == 1, snapshots
         with open(os.path.join(snapshot_dir, snapshots[0])) as f:
-            snap = yaml.safe_load(f)
+            return snapshots[0], yaml.safe_load(f)
 
+    def test_empty_report_walks_back_to_previous_run(self, tmp_path, mock_jira):
+        """A zero-count latest run is evidence, not absence: filter and
+        timestamp come from the newest run that processed anything —
+        the newer timestamp would hash issues at post-edit state and hide
+        any edit made between the two runs (RHAIFIRST-569)."""
+        url, server = mock_jira
+        server.issues = {
+            "RHAIRFE-1": "Issue one.",
+            "RHAIRFE-2": "Issue two.",
+        }
+        results = _make_results_dir(
+            tmp_path,
+            ["20260331-110000", "20260401-120000"],
+            latest="20260401-120000",
+            reports={
+                "20260331-110000": {
+                    "report_stage": "pre_submit",
+                    "per_rfe": [{"id": "RHAIRFE-1", "recommendation": "submit"}],
+                },
+                "20260401-120000": [],
+            },
+        )
+        art_dir = str(tmp_path / "artifacts")
+        os.makedirs(art_dir)
+
+        r = self._run_bootstrap(results, art_dir, url)
+        assert r.returncode == 0, r.stderr
+        assert "walking back to 20260331-110000" in r.stderr
+        # The stage warning is evaluated against the report actually USED —
+        # the walked-back one — not the empty tip (which has no stage field).
+        assert "run report 20260331-110000 is report_stage: pre_submit" in r.stderr
+
+        name, snap = self._load_snapshot(art_dir)
+        # The FILE keeps the tip run's name: find_previous_snapshot picks the
+        # reverse-lexically newest, so an older-named file would be shadowed
+        # forever by any stale snapshot a pre-walk-back bootstrap wrote, and
+        # a re-run must overwrite that file in place.
+        assert name == "issue-snapshot-20260401-120000.yaml"
+        assert snap["bootstrapped_from"] == "20260331-110000"
+        assert snap["query_timestamp"] == "2026-03-31T11:00:00Z"
+        # Filtered by the older run's report — not include-all.
+        assert set(snap["issues"]) == {"RHAIRFE-1"}
+
+    def test_all_reports_empty_includes_all_unprocessed(self, tmp_path, mock_jira):
+        """Every report saying "processed nothing" is positive evidence, so no
+        --include-all gate: everything is snapshotted as unprocessed."""
+        url, server = mock_jira
+        server.issues = {
+            "RHAIRFE-1": "Issue one.",
+            "RHAIRFE-2": "Issue two.",
+        }
+        results = _make_results_dir(
+            tmp_path,
+            ["20260331-110000", "20260401-120000"],
+            latest="20260401-120000",
+            reports={"20260331-110000": [], "20260401-120000": []},
+        )
+        # Real pushed runs carry snapshots. Their presence must NOT trip the
+        # partial-clone guard here: the reports were read and say "processed
+        # nothing" — evidence, not absence.
+        for run in ("20260331-110000", "20260401-120000"):
+            _write(
+                os.path.join(results, run, "auto-fix-runs", f"issue-snapshot-{run}.yaml"),
+                "issues: {}\n",
+            )
+        art_dir = str(tmp_path / "artifacts")
+        os.makedirs(art_dir)
+
+        r = self._run_bootstrap(results, art_dir, url)
+        assert r.returncode == 0, r.stderr
+        assert "no run with a non-empty item list" in r.stderr
+
+        _, snap = self._load_snapshot(art_dir)
         assert len(snap["issues"]) == 2
-        # Fail-safe: bootstrap has no run-report evidence these were processed, so it must not
-        # write a bare hash — snapshot_fetch reads a missing `processed` as True and nothing
+        # Fail-safe: no run-report evidence of processing, so no bare hash —
+        # snapshot_fetch reads a missing `processed` as True and nothing
         # ever demotes such an entry.
         assert all(e == {"hash": e["hash"], "processed": False} for e in snap["issues"].values())
+
+    def test_walk_back_skips_reportless_dir(self, tmp_path, mock_jira):
+        """A run directory without a report cannot provide evidence either
+        way — the walk-back warns and keeps looking."""
+        url, server = mock_jira
+        server.issues = {"RHAIRFE-1": "Issue one."}
+        results = _make_results_dir(
+            tmp_path,
+            ["20260330-100000", "20260331-110000", "20260401-120000"],
+            latest="20260401-120000",
+            reports={"20260330-100000": ["RHAIRFE-1"], "20260401-120000": []},
+        )
+        art_dir = str(tmp_path / "artifacts")
+        os.makedirs(art_dir)
+
+        r = self._run_bootstrap(results, art_dir, url)
+        assert r.returncode == 0, r.stderr
+        assert "20260331-110000 has no run report — skipped in walk-back" in r.stderr
+        assert "walking back to 20260330-100000" in r.stderr
+
+        name, snap = self._load_snapshot(art_dir)
+        assert snap["bootstrapped_from"] == "20260330-100000"
+
+    def test_corrupt_report_during_walk_back_errors(self, tmp_path, mock_jira):
+        """The chain of evidence stops at the first unreadable report — same
+        strictness as a corrupt latest, same --include-all escape hatch."""
+        url, server = mock_jira
+        server.issues = {"RHAIRFE-1": "Issue one."}
+        results = _make_results_dir(
+            tmp_path,
+            ["20260331-110000", "20260401-120000"],
+            latest="20260401-120000",
+            reports={"20260331-110000": "per_rfe: [unclosed", "20260401-120000": []},
+        )
+        art_dir = str(tmp_path / "artifacts")
+        os.makedirs(art_dir)
+
+        r = self._run_bootstrap(results, art_dir, url)
+        assert r.returncode == 1
+        assert "Error:" in r.stderr and "20260331-110000" in r.stderr
+
+        r = self._run_bootstrap(results, art_dir, url, extra=["--include-all"])
+        assert r.returncode == 0, r.stderr
+        _, snap = self._load_snapshot(art_dir)
+        assert set(snap["issues"]) == {"RHAIRFE-1"}
+        assert all(e == {"hash": e["hash"], "processed": False} for e in snap["issues"].values())
+
+    def test_walk_back_refuses_reportless_dir_with_snapshots(self, tmp_path, mock_jira):
+        """A dir met during walk-back that has snapshots but no report is the
+        aborted-run / partial-clone shape: its work is unknown, so bootstrap
+        hard-stops exactly like the tip-level guard (RHAIFIRST-582 review
+        finding). --include-all remains the escape hatch."""
+        url, server = mock_jira
+        server.issues = {"RHAIRFE-1": "Issue one."}
+        results = _make_results_dir(
+            tmp_path,
+            ["20260330-100000", "20260401-120000"],
+            latest="20260401-120000",
+            reports={"20260401-120000": []},
+        )
+        _write(
+            os.path.join(
+                results,
+                "20260330-100000",
+                "auto-fix-runs",
+                "issue-snapshot-20260330-100000.yaml",
+            ),
+            "issues: {}\n",
+        )
+        art_dir = str(tmp_path / "artifacts")
+        os.makedirs(art_dir)
+
+        r = self._run_bootstrap(results, art_dir, url)
+        assert r.returncode == 1
+        assert "20260330-100000" in r.stderr and "looks partial" in r.stderr
+
+        r = self._run_bootstrap(results, art_dir, url, extra=["--include-all"])
+        assert r.returncode == 0, r.stderr
+        _, snap = self._load_snapshot(art_dir)
+        assert all(e == {"hash": e["hash"], "processed": False} for e in snap["issues"].values())
+
+    def test_walk_back_ignores_replay_dirs_newer_than_latest(self, tmp_path, mock_jira):
+        """Replay dirs pushed with --no-update-latest sit NEWER than the
+        latest symlink target; the walk-back must only look older."""
+        url, server = mock_jira
+        server.issues = {"RHAIRFE-1": "Issue one.", "RHAIRFE-2": "Issue two."}
+        results = _make_results_dir(
+            tmp_path,
+            ["20260331-110000", "20260401-120000", "20260402-130000"],
+            latest="20260401-120000",
+            reports={
+                "20260331-110000": ["RHAIRFE-1"],
+                "20260401-120000": [],
+                "20260402-130000": ["RHAIRFE-2"],
+            },
+        )
+        art_dir = str(tmp_path / "artifacts")
+        os.makedirs(art_dir)
+
+        r = self._run_bootstrap(results, art_dir, url)
+        assert r.returncode == 0, r.stderr
+        assert "walking back to 20260331-110000" in r.stderr
+
+        _, snap = self._load_snapshot(art_dir)
+        assert set(snap["issues"]) == {"RHAIRFE-1"}
+
+    def test_initiative_walk_back_uses_initiative_report_names(self, tmp_path, mock_jira):
+        """The walk-back must read reports through the type config — the
+        initiative report is initiative-run-<ts>.yaml with per_initiative."""
+        url, server = mock_jira
+        server.issues = {"RHOAIENG-1": "Initiative one."}
+        results = _make_results_dir(
+            tmp_path, ["20260331-110000", "20260401-120000"], latest="20260401-120000"
+        )
+        for run, items in (
+            ("20260331-110000", [{"id": "RHOAIENG-1", "recommendation": "submit"}]),
+            ("20260401-120000", []),
+        ):
+            _write(
+                os.path.join(results, run, "auto-fix-runs", f"initiative-run-{run}.yaml"),
+                yaml.dump({"per_initiative": items}),
+            )
+        art_dir = str(tmp_path / "artifacts")
+        os.makedirs(art_dir)
+
+        r = self._run_bootstrap(results, art_dir, url, extra=["--type", "initiative"])
+        assert r.returncode == 0, r.stderr
+        assert "walking back to 20260331-110000" in r.stderr
+
+        snapshot_dir = os.path.join(art_dir, "auto-fix-runs")
+        snaps = [f for f in os.listdir(snapshot_dir) if f.startswith("initiative-snapshot-")]
+        assert snaps == ["initiative-snapshot-20260401-120000.yaml"]
+        with open(os.path.join(snapshot_dir, snaps[0])) as f:
+            snap = yaml.safe_load(f)
+        assert set(snap["issues"]) == {"RHOAIENG-1"}
+
+    def test_walk_back_ignores_symlinked_run_dirs(self, tmp_path, mock_jira):
+        """A timestamp-named symlink must not route the walk-back to a report
+        outside results_dir (CWE-59) — the filter would be attacker-chosen."""
+        url, server = mock_jira
+        server.issues = {"RHAIRFE-1": "Issue one.", "RHAIRFE-2": "Issue two."}
+        results = _make_results_dir(
+            tmp_path,
+            ["20260330-100000", "20260401-120000"],
+            latest="20260401-120000",
+            reports={"20260330-100000": ["RHAIRFE-1"], "20260401-120000": []},
+        )
+        # Outside dir with a newer-stamped report claiming a different filter.
+        outside = tmp_path / "outside" / "20260331-110000"
+        _write(
+            str(outside / "auto-fix-runs" / "20260331-110000.yaml"),
+            yaml.dump({"per_rfe": [{"id": "RHAIRFE-2", "recommendation": "submit"}]}),
+        )
+        os.symlink(str(outside), os.path.join(results, "20260331-110000"))
+        art_dir = str(tmp_path / "artifacts")
+        os.makedirs(art_dir)
+
+        r = self._run_bootstrap(results, art_dir, url)
+        assert r.returncode == 0, r.stderr
+        # The symlinked dir is skipped; the walk lands on the real older run.
+        assert "walking back to 20260330-100000" in r.stderr
+        _, snap = self._load_snapshot(art_dir)
+        assert set(snap["issues"]) == {"RHAIRFE-1"}
+
+    def test_pre_submit_report_warns(self, tmp_path, mock_jira):
+        """A pre_submit tip predates that run's Jira writes — one warning
+        naming the consequence (RHAIFIRST-569 item 2)."""
+        url, server = mock_jira
+        server.issues = {"RHAIRFE-1": "Issue one."}
+        results = _make_results_dir(
+            tmp_path,
+            ["20260401-120000"],
+            latest="20260401-120000",
+            reports={
+                "20260401-120000": {
+                    "report_stage": "pre_submit",
+                    "per_rfe": [{"id": "RHAIRFE-1", "recommendation": "submit"}],
+                }
+            },
+        )
+        art_dir = str(tmp_path / "artifacts")
+        os.makedirs(art_dir)
+
+        r = self._run_bootstrap(results, art_dir, url)
+        assert r.returncode == 0, r.stderr
+        assert "report_stage: pre_submit" in r.stderr
+        assert "split children" in r.stderr
+
+    def test_report_without_stage_is_silent(self, tmp_path, mock_jira):
+        """Pre-versioned reports say nothing about their stage — no warning."""
+        url, server = mock_jira
+        server.issues = {"RHAIRFE-1": "Issue one."}
+        results = _make_results_dir(
+            tmp_path,
+            ["20260401-120000"],
+            latest="20260401-120000",
+            processed_ids=["RHAIRFE-1"],
+        )
+        art_dir = str(tmp_path / "artifacts")
+        os.makedirs(art_dir)
+
+        r = self._run_bootstrap(results, art_dir, url)
+        assert r.returncode == 0, r.stderr
+        assert "pre_submit" not in r.stderr
 
     def test_partial_results_dir_is_refused(self, tmp_path, mock_jira):
         """Snapshots but no run report means a partial clone — do not silently include all."""
@@ -1220,13 +1495,64 @@ class TestLoadRunReportRejectsCorruptFiles:
         with pytest.raises(ValueError, match="has no per_rfe item list"):
             _load_run_report(results, run)
 
-    def test_empty_item_list_is_still_none(self, tmp_path):
-        """Key present, list empty — the legitimate zero-count shape keeps its meaning."""
+    def test_empty_item_list_returns_empty_set(self, tmp_path):
+        """Key present, list empty — positive evidence of a zero-count run,
+        distinct from (None, None) absence so the caller can walk back."""
         results, run = self._write_report(tmp_path, "per_rfe: []\n")
 
         ids, report = _load_run_report(results, run)
 
-        assert ids is None and report is None
+        assert ids == set()
+        assert isinstance(report, dict)
+
+    def test_null_item_list_raises(self, tmp_path):
+        """per_rfe: null is schema drift, not a zero-count run — and it must
+        raise the documented ValueError, not escape as a bare TypeError."""
+        results, run = self._write_report(tmp_path, "per_rfe: null\n")
+
+        with pytest.raises(ValueError, match="non-list"):
+            _load_run_report(results, run)
+
+    def test_mapping_item_list_raises(self, tmp_path):
+        """per_rfe: {} iterates like an empty list — it must not masquerade
+        as a legitimate zero-count run and trigger the walk-back."""
+        results, run = self._write_report(tmp_path, "per_rfe: {}\n")
+
+        with pytest.raises(ValueError, match="non-list"):
+            _load_run_report(results, run)
+
+    def test_unhashable_id_raises_value_error(self, tmp_path):
+        """id: {} must follow the malformed-report path, not escape as a
+        TypeError traceback past main's ValueError handling."""
+        results, run = self._write_report(tmp_path, "per_rfe:\n- id: {}\n")
+
+        with pytest.raises(ValueError, match="malformed"):
+            _load_run_report(results, run)
+
+    def test_non_dict_entry_raises_even_containing_error(self, tmp_path):
+        """A malformed entry must refuse loudly — the error-entry skip is for
+        error DICTS, not for anything whose text happens to contain 'error'."""
+        results, run = self._write_report(tmp_path, 'per_rfe:\n- "RHAIRFE-2 had an error"\n')
+
+        with pytest.raises(ValueError, match="malformed"):
+            _load_run_report(results, run)
+
+    def test_error_entries_do_not_count_as_processed(self, tmp_path):
+        """An error entry records that the run could NOT dispose of the item —
+        counting it as processed would freeze it out of every future fetch
+        (the RHAIRFE-3201 shape, RHAIFIRST-582)."""
+        results, run = self._write_report(
+            tmp_path,
+            "per_rfe:\n"
+            "- id: RHAIRFE-1\n"
+            "  recommendation: submit\n"
+            "- id: RHAIRFE-2\n"
+            "  error: review file not found\n",
+        )
+
+        ids, _ = _load_run_report(results, run)
+
+        assert ids == {"RHAIRFE-1"}
 
     def test_missing_file_is_still_none(self, tmp_path):
         """Absence keeps its meaning — only corruption raises."""

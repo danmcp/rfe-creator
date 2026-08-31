@@ -573,15 +573,33 @@ class TestFeasibilityLabelOnSubmit:
         assert "Remove labels" not in stdout
         assert "rfe-creator-feasibility" not in stdout
 
-    def test_no_review_skips_feasibility_op(self, art_dir):
-        """Missing review file → no feasibility label, but submit still runs."""
+    def test_invalid_review_still_proceeds(self, art_dir):
+        """A PRESENT but schema-invalid review keeps the old warn-and-proceed
+        behavior: check_resume reads reviews with a laxer bar, so leaving the
+        item unprocessed would re-select it forever without ever re-reviewing
+        it — the skip is deliberately for ABSENT reviews only."""
+        _write(f"{art_dir}/rfe-tasks/RFE-001.md", self._task("RFE-001"))
+        _write(
+            f"{art_dir}/rfe-reviews/RFE-001-review.md",
+            "---\nrfe_id: RFE-001\nscore: not-a-number\n---\nBroken.",
+        )
+        stdout, stderr, rc = _run_submit(art_dir)
+        assert rc == 0
+        assert "cannot read review" in stderr
+        assert "Would create" in stdout
+        assert "no readable review" not in stdout
+
+    def test_no_review_skips_the_item_entirely(self, art_dir):
+        """Missing review file → the item is not submitted at all. It never
+        finished the pipeline, so submitting would push content no review
+        approved, and disposing of it would freeze it out of future runs
+        (RHAIRFE-3201, RHAIFIRST-582)."""
         _write(f"{art_dir}/rfe-tasks/RFE-001.md", self._task("RFE-001"))
         # No review file written
         stdout, _, rc = _run_submit(art_dir)
         assert rc == 0
-        # Still creates the RFE
-        assert "Create" in stdout or "Would create" in stdout
-        # But no feasibility label
+        assert "no readable review" in stdout
+        assert "Would create" not in stdout
         assert "rfe-creator-feasibility" not in stdout
 
 
