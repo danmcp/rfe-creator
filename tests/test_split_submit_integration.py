@@ -21,7 +21,21 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 import split_submit
 from jira_utils import add_comment, get_comments, get_issue, text_to_adf_paragraph
-from split_submit import SPLIT_CONFIG, discover_state, phase1_persist, phase2_create_link
+from split_submit import (
+    SPLIT_CONFIG,
+    _child_fingerprint,
+    _child_marker_label,
+    discover_state,
+    phase1_persist,
+    phase2_create_link,
+)
+
+
+def _marker_for(art_dir, child_id, parent_key="RHAIRFE-1000"):
+    config = SPLIT_CONFIG["rfe"]
+    fp = _child_fingerprint(config, f"{art_dir}/rfe-tasks/{child_id}.md")
+    return _child_marker_label("rfe-creator", parent_key, child_id, fp)
+
 
 SCRIPT = os.path.join(os.path.dirname(__file__), "..", "scripts", "split_submit.py")
 
@@ -124,6 +138,7 @@ class TestFullRun:
     def test_creates_links_confirms_and_closes(self, art_dir, jira):
         _setup_parent(jira, art_dir)
 
+        marker = _marker_for(art_dir, "RFE-001")
         r = _run_split(art_dir, jira.url)
         assert r.returncode == 0, r.stderr + r.stdout
 
@@ -131,7 +146,7 @@ class TestFullRun:
         assert len(created) == 2
         assert _split_links(jira.url, PARENT_KEY) == created
         # Marker labels present: the from-birth recovery signal.
-        marked = _search_keys(jira.url, "labels = rfe-creator-split-child-rhairfe-1000-rfe-001")
+        marked = _search_keys(jira.url, f'labels = "{marker}"')
         assert len(marked) == 1
         # Parent closed.
         issue = get_issue(jira.url, "admin", "admin", PARENT_KEY, ["status"])
@@ -216,6 +231,7 @@ class TestSiblingChangesBetweenRuns:
 
     def test_inserted_sibling_does_not_misalign(self, art_dir, jira, monkeypatch):
         children = _setup_parent(jira, art_dir)
+        marker_001 = _marker_for(art_dir, "RFE-001")
         # Die on the second create: child RFE-001 is fully done.
         config = SPLIT_CONFIG["rfe"]
         state = discover_state(jira.url, "admin", "admin", PARENT_KEY, children, config)
@@ -247,10 +263,7 @@ class TestSiblingChangesBetweenRuns:
         assert r.returncode == 0, r.stderr + r.stdout
 
         # RFE-001 not duplicated; three children total, all linked.
-        assert (
-            len(_search_keys(jira.url, "labels = rfe-creator-split-child-rhairfe-1000-rfe-001"))
-            == 1
-        )
+        assert len(_search_keys(jira.url, f'labels = "{marker_001}"')) == 1
         created = _search_keys(jira.url, "labels = rfe-creator-split-result")
         assert len(created) == 3
         assert _split_links(jira.url, PARENT_KEY) == created
@@ -342,6 +355,42 @@ class TestStaleMarkerLabels:
             jira.url, "admin", "admin", PARENT_KEY, new_children, state, art_dir, config, False
         )
         # Fresh child created for the new scope; the stale one stays unlinked.
+        assert len(_search_keys(jira.url, "labels = rfe-creator-split-result")) == 2
+        assert len(_split_links(jira.url, PARENT_KEY)) == 1
+
+    def test_resplit_same_title_different_content_is_not_adopted(self, art_dir, jira, monkeypatch):
+        """A re-split can reuse the same parent, id AND title for different
+        scope — the title is too weak an identity (CodeRabbit on #169). The
+        content fingerprint in the marker label must reject the stale child."""
+        children = _setup_parent(jira, art_dir, child_ids=("RFE-001",))
+        config = SPLIT_CONFIG["rfe"]
+        state = discover_state(jira.url, "admin", "admin", PARENT_KEY, children, config)
+        phase1_persist(jira.url, "admin", "admin", PARENT_KEY, children, state, config, False)
+
+        def dying(*a, **k):
+            raise RuntimeError("died before link")
+
+        monkeypatch.setattr(split_submit, "create_issue_link", dying)
+        with pytest.raises(RuntimeError):
+            phase2_create_link(
+                jira.url, "admin", "admin", PARENT_KEY, children, state, art_dir, config, False
+            )
+        monkeypatch.undo()
+
+        # Same id, same title — different body.
+        _write(
+            f"{art_dir}/rfe-tasks/RFE-001.md",
+            CHILD_TASK.format(child_id="RFE-001", title="Child RFE-001").replace(
+                "Content for RFE-001.", "Entirely different scope."
+            ),
+        )
+        new_children = [("RFE-001", "Child RFE-001", "Major", f"{art_dir}/rfe-tasks/RFE-001.md")]
+        state = discover_state(jira.url, "admin", "admin", PARENT_KEY, new_children, config)
+        assert "RFE-001" not in state.phase2_done, "stale child adopted despite content change"
+
+        phase2_create_link(
+            jira.url, "admin", "admin", PARENT_KEY, new_children, state, art_dir, config, False
+        )
         assert len(_search_keys(jira.url, "labels = rfe-creator-split-result")) == 2
         assert len(_split_links(jira.url, PARENT_KEY)) == 1
 
