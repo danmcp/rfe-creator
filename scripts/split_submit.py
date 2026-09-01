@@ -135,21 +135,35 @@ def _extract_adf_text(node):
     return _extract_adf_text(node.get("content", []))
 
 
-def _child_marker_label(label_prefix, parent_key, child_id):
-    """Deterministic per-(parent, child) label applied at creation.
+def _child_fingerprint(config, artifact_path):
+    """Short content fingerprint of the child's cleaned markdown body."""
+    import hashlib
+
+    _, _, _, cleaned = config["parse_child_fn"](artifact_path)
+    return hashlib.sha256(cleaned.encode("utf-8")).hexdigest()[:12]
+
+
+def _child_marker_label(label_prefix, parent_key, child_id, fingerprint):
+    """Deterministic per-(parent, child, content) label applied at creation.
 
     This is the recovery signal that exists from the instant the child does:
     a process death between create_issue and the link/comment used to mint a
     ticket no future run could find (RHAIFIRST-570). It carries the child's
-    local id, so recovery maps by identity instead of position — and the
-    PARENT key, because local ids are workspace-scoped and restart at 001 in
-    every fresh CI run while the labels persist forever: an id-only label
-    would let a new split adopt a stale child of a different parent
-    (reproduced live in review). Adoption is additionally title-guarded for
-    the one collision this scoping cannot express: the same parent re-split
-    with a different decomposition that reuses the same local ids.
+    local id, so recovery maps by identity instead of position; the PARENT
+    key, because local ids are workspace-scoped and restart at 001 in every
+    fresh CI run while labels persist forever (an id-only label let a new
+    split adopt a stale child of a DIFFERENT parent — reproduced live in
+    review); and a CONTENT fingerprint, because a re-split can legitimately
+    reuse the same parent, id and even title for different scope, and the
+    title is too weak an identity to prevent adopting a stale child whose
+    body is wrong (CodeRabbit on #169). Adoption therefore requires the
+    exact label — same parent, id and content — plus the title guard.
+    Within-run retries see identical artifacts and adopt; a cross-run
+    re-split regenerates content and deliberately does NOT adopt: minting a
+    fresh child and leaving the stale one for the human the quarantine
+    comment already points at beats silently binding wrong content.
     """
-    return f"{label_prefix}-split-child-{parent_key.lower()}-{child_id.lower()}"
+    return f"{label_prefix}-split-child-{parent_key.lower()}-{child_id.lower()}-{fingerprint}"
 
 
 class SubmissionState:
@@ -296,9 +310,15 @@ def discover_state(server, user, token, parent_key, expected_children, config):
     #     run minted a duplicate (RHAIFIRST-570).
     label_prefix = config["label_prefix"]
     title_by_id = {child_id: title for (child_id, title, _, _) in expected_children}
+    path_by_id = {child_id: path for (child_id, _, _, path) in expected_children}
     unmapped = [cid for cid in ids_in_order if cid not in state.phase2_done]
     if unmapped:
-        markers = [_child_marker_label(label_prefix, parent_key, cid) for cid in unmapped]
+        markers = [
+            _child_marker_label(
+                label_prefix, parent_key, cid, _child_fingerprint(config, path_by_id[cid])
+            )
+            for cid in unmapped
+        ]
         marker_by_label = dict(zip(markers, unmapped))
         # Quote every literal: label values embed parent_key and child ids
         # that come from frontmatter/CLI, and an unquoted `)` or `AND` would
@@ -321,10 +341,9 @@ def discover_state(server, user, token, parent_key, expected_children, config):
             child_id = hit_ids[0]
             if child_id in state.phase2_done:
                 continue
-            # Title guard: a quarantine-cleared parent re-split with a
-            # DIFFERENT decomposition legitimately reuses local ids — the
-            # stale child from the abandoned attempt must not be adopted
-            # for new scope it does not contain.
+            # Title guard, on top of the content-bound label: adoption
+            # happens only when parent, id, content AND title all match —
+            # i.e. the same artifact this run would submit.
             if hit.get("fields", {}).get("summary", "") != title_by_id.get(child_id):
                 print(
                     f"  Warning: {hit['key']} carries the marker for {child_id} but "
@@ -475,7 +494,9 @@ def phase2_create_link(
         labels = [
             f"{label_prefix}-auto-created",
             f"{label_prefix}-split-result",
-            _child_marker_label(label_prefix, parent_key, child_id),
+            _child_marker_label(
+                label_prefix, parent_key, child_id, _child_fingerprint(config, artifact_path)
+            ),
         ]
 
         review_path = find_review(artifacts_dir, child_id)
