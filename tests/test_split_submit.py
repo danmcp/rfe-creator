@@ -177,8 +177,12 @@ class TestClassifyExit:
     failures (dead auth, outage) fail every parent identically; everything
     else says nothing about the next parent (RHAIFIRST-571)."""
 
-    @pytest.mark.parametrize("code", [401, 403, 429, 502, 503, 504])
+    @pytest.mark.parametrize("code", [401, 403, 429, 500, 501, 502, 503, 504, 521])
     def test_systemic_http_codes(self, code):
+        """Any 5xx is a server-side fault: a bare 500 is re-raised by
+        api_call_with_retry without retrying, and misreading an
+        instance-wide 500 as per-parent fans out across the batch
+        (CodeRabbit on #170)."""
         assert _classify_exit(_http_error(code)) == EXIT_SYSTEMIC
 
     @pytest.mark.parametrize("code", [400, 404, 409, 422])

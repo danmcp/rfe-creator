@@ -109,6 +109,17 @@ def _load_run_report(results_dir, run_name, config=None):
                 f"run report {path} has malformed {item_key} entries: "
                 f"expected a mapping, got {type(entry).__name__}"
             )
+        try:
+            # Validate BEFORE the outcome-key skip: an id-less or unhashable
+            # id is corrupt input whatever the entry's outcome, and skipping
+            # it silently would build a snapshot from an incomplete
+            # processed-id set instead of refusing (CodeRabbit, CWE-20).
+            # TypeError included: an unhashable id ({} / []) must follow the
+            # same malformed-report path as a missing one.
+            entry_id = entry["id"]
+            hash(entry_id)
+        except (KeyError, TypeError) as e:
+            raise ValueError(f"run report {path} has malformed {item_key} entries: {e}") from e
         if "error" in entry or "failed_reason" in entry or "blocked_reason" in entry:
             # None of these were disposed of: error entries could not even be
             # reported on; failed_reason marks a crashed or never-attempted
@@ -117,13 +128,7 @@ def _load_run_report(results_dir, run_name, config=None):
             # quarantine-cleared parent bootstrapped from this report would
             # be frozen at processed:true (review finding, RHAIFIRST-571).
             continue
-        try:
-            ids.add(entry["id"])
-        except (KeyError, TypeError) as e:
-            # TypeError included: an unhashable id ({} / []) must follow the
-            # same malformed-report path as a missing one, not escape as a
-            # traceback past main's ValueError handling.
-            raise ValueError(f"run report {path} has malformed {item_key} entries: {e}") from e
+        ids.add(entry_id)
     return ids, report
 
 

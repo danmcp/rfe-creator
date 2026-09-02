@@ -11,6 +11,7 @@ from generate_review_pdf import (
     _ensure_trailing_newline,
     _open_nofollow,
     _safe_artifact_path,
+    _split_outcome,
     _strip_frontmatter,
     generate_diff,
 )
@@ -317,3 +318,23 @@ class TestOpenNofollowEncoding:
         assert "hello" in content
         assert "world" in content
         assert "�" in content
+
+
+class TestSplitOutcome:
+    """Three-way disposition: only 'failed' may be partially applied in
+    Jira — lumping not-attempted parents into failed misstated the Jira
+    state in every renderer (CodeRabbit on #170)."""
+
+    def test_refusals(self):
+        assert _split_outcome("split_refused: too many leaf children") == "refused"
+        assert _split_outcome("split_failed: agent did not write split-status file") == "refused"
+
+    def test_failed(self):
+        assert _split_outcome("split_submit_failed: exit 5") == "failed"
+
+    def test_not_attempted(self):
+        assert _split_outcome("split_not_attempted: split phase aborted") == "not_attempted"
+
+    def test_clean(self):
+        assert _split_outcome(None) is None
+        assert _split_outcome("") is None

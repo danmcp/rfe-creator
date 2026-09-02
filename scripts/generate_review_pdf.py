@@ -278,15 +278,24 @@ def diff_to_html(diff_text):
     return "\n".join(html_parts)
 
 
-def _is_split_refusal(err):
-    """Refusal (nothing reached Jira) vs crash/abort (may be partially applied).
+def _split_outcome(err):
+    """Three-way split disposition, or None for a clean split.
 
-    split_submit_failed:* and split_not_attempted:* are NOT refusals — their
-    children may exist in Jira (or the parent will simply be retried), and
-    rendering them as "Refused — Not Submitted" misstates both
-    (RHAIFIRST-571).
+    'refused' (leaf cap / conflict — nothing reached Jira) and
+    'not_attempted' (skipped by a phase abort — nothing reached Jira
+    either) both exclude the children from submitted stats, but say
+    different things about WHY. 'failed' (split_submit crashed) is the
+    only one whose children may be partially applied in Jira — the
+    partial-application wording is reserved for it (RHAIFIRST-571).
     """
-    return bool(err) and not str(err).startswith(("split_submit_failed:", "split_not_attempted:"))
+    if not err:
+        return None
+    text = str(err)
+    if text.startswith("split_submit_failed:"):
+        return "failed"
+    if text.startswith("split_not_attempted:"):
+        return "not_attempted"
+    return "refused"
 
 
 def badge(passed, error=None, tooltip=None):
@@ -523,17 +532,23 @@ def main():
     # submission (split_submit_failed:*) is different — it may be partially
     # applied and its real children must not be dropped from the submitted
     # stats or rendered as a refusal (RHAIFIRST-571).
-    refused_parents = {sp["rfe_id"] for sp in split_parents if _is_split_refusal(sp.get("error"))}
-    failed_parents = {
-        sp["rfe_id"]
-        for sp in split_parents
-        if sp.get("error") and not _is_split_refusal(sp["error"])
+    refused_parents = {
+        sp["rfe_id"] for sp in split_parents if _split_outcome(sp.get("error")) == "refused"
     }
+    not_attempted_parents = {
+        sp["rfe_id"] for sp in split_parents if _split_outcome(sp.get("error")) == "not_attempted"
+    }
+    failed_parents = {
+        sp["rfe_id"] for sp in split_parents if _split_outcome(sp.get("error")) == "failed"
+    }
+    # Children of refused AND not-attempted parents were never submitted —
+    # both are excluded from submitted stats; only 'failed' children stay.
+    unsubmitted_parents = refused_parents | not_attempted_parents
 
     def _has_refused_ancestor(r):
         pk = r.get("parent_key")
         while pk:
-            if pk in refused_parents:
+            if pk in unsubmitted_parents:
                 return True
             parent = rfe_by_id.get(pk)
             pk = parent.get("parent_key") if parent else None
@@ -1627,7 +1642,7 @@ def main():
             <td class="key-col"><a href="#{r["rfe_id"]}">{html_escape(r["rfe_id"])}</a>{jira_ext(r["rfe_id"])} {badge(False, error=error, tooltip=tip)}</td>
             <td>{r["before_total"]}/10</td>
             <td>{badge(r["before_pass"])}</td>
-            <td colspan="2" style="font-size:8pt;color:#8b4513;font-weight:600;">&rarr; {len(leaves)} children ({"not submitted" if _is_split_refusal(error) else "may be partially submitted"})</td>
+            <td colspan="2" style="font-size:8pt;color:#8b4513;font-weight:600;">&rarr; {len(leaves)} children ({"may be partially submitted" if _split_outcome(error) == "failed" else "not submitted"})</td>
             <td>&mdash;</td>
             <td>{feas}</td>
             <td>&mdash;</td>
@@ -1723,6 +1738,14 @@ def main():
             else ""
         }\
 {
+            f'''            <div class="stat-box" style="border-color: #7f8c8d;">
+                <div class="stat-value" style="color: #7f8c8d;">{len(not_attempted_parents)}</div>
+                <div class="stat-label">Not Attempted</div>
+            </div>'''
+            if not_attempted_parents
+            else ""
+        }\
+{
             f'''
             <div class="stat-box" style="border-color: #f39c12;">
                 <div class="stat-value" style="color: #f39c12;">{sc_needs_attn}</div>
@@ -1749,6 +1772,8 @@ def main():
                 sp_header += f", {len(refused_parents)} refused"
             if failed_parents:
                 sp_header += f", {len(failed_parents)} failed"
+            if not_attempted_parents:
+                sp_header += f", {len(not_attempted_parents)} not attempted"
             sp_header += ")"
             html += f"""        <tr id="section-splits"><td colspan="8" style="background:#fff3e0;font-weight:700;font-size:9pt;padding:6pt 8pt;color:#e65100;">{sp_header}</td></tr>
 """
@@ -1978,9 +2003,14 @@ def main():
             if split_error:
                 attn_reason = r.get("needs_attention_reason", "")
                 reason_text = f": {html_escape(attn_reason)}" if attn_reason else ""
+                banner_text = {
+                    "refused": "Split Refused &mdash; Not Submitted",
+                    "not_attempted": "Split Not Attempted &mdash; Not Submitted",
+                    "failed": "Split Failed &mdash; May Be Partially Applied",
+                }[_split_outcome(split_error)]
                 html += f"""
             <div style="background:#fef3e6;border:2px solid #e67e22;border-radius:6pt;padding:12pt 16pt;margin-bottom:14pt;">
-                <div style="font-size:11pt;font-weight:700;color:#e67e22;margin-bottom:4pt;">&#x26A0; {"Split Refused &mdash; Not Submitted" if _is_split_refusal(split_error) else "Split Failed &mdash; May Be Partially Applied"}</div>
+                <div style="font-size:11pt;font-weight:700;color:#e67e22;margin-bottom:4pt;">&#x26A0; {banner_text}</div>
                 <div style="font-size:9pt;color:#8b4513;">{html_escape(str(split_error))}{reason_text}</div>
             </div>
 """
@@ -1997,7 +2027,7 @@ def main():
                     <div class="stat-box">
                         <div class="stat-label">Split Into</div>
                         <div class="stat-value">{len(leaves)}</div>
-                        <div class="stat-label">children{" (not submitted)" if _is_split_refusal(split_error) else (" (may be partial)" if split_error else "")}</div>
+                        <div class="stat-label">children{" (may be partial)" if _split_outcome(split_error) == "failed" else (" (not submitted)" if split_error else "")}</div>
                     </div>
                     <div class="stat-box">
                         <div class="stat-label">Children Passing</div>

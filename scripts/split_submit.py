@@ -91,9 +91,14 @@ def _classify_exit(exc):
     if isinstance(exc, urllib.error.HTTPError):
         if exc.code in (401, 403):
             return EXIT_SYSTEMIC
-        if exc.code in (429, 502, 503, 504):
-            # Only reachable after api_call_with_retry exhausted its
-            # attempts — a healthy instance would have recovered within.
+        if exc.code == 429 or exc.code >= 500:
+            # 429/502/503/504 are only reachable after api_call_with_retry
+            # exhausted its attempts; a bare 500 (and any other 5xx) is
+            # re-raised immediately — but it is still a server-side fault,
+            # and misreading an instance-wide 500 as per-parent fans out
+            # requests and quarantine flags across the whole batch
+            # (CodeRabbit). A payload-specific 500 aborting one night is
+            # the cheaper error: the parent is untouched and retried.
             return EXIT_SYSTEMIC
         return EXIT_PER_PARENT
     if isinstance(exc, urllib.error.URLError):

@@ -1531,6 +1531,23 @@ class TestLoadRunReportRejectsCorruptFiles:
         with pytest.raises(ValueError, match="malformed"):
             _load_run_report(results, run)
 
+    @pytest.mark.parametrize(
+        "entry_yaml",
+        [
+            "- failed_reason: 'split_submit_failed: exit 5'",
+            "- blocked_reason: too many leaf children",
+            "- error: review file not found",
+        ],
+    )
+    def test_outcome_entry_without_id_raises(self, tmp_path, entry_yaml):
+        """An id-less entry is corrupt whatever its outcome key — skipping it
+        silently would build a snapshot from an incomplete processed-id set
+        instead of refusing (CodeRabbit on #170, CWE-20)."""
+        results, run = self._write_report(tmp_path, f"per_rfe:\n{entry_yaml}\n")
+
+        with pytest.raises(ValueError, match="malformed"):
+            _load_run_report(results, run)
+
     def test_non_dict_entry_raises_even_containing_error(self, tmp_path):
         """A malformed entry must refuse loudly — the error-entry skip is for
         error DICTS, not for anything whose text happens to contain 'error'."""
