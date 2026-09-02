@@ -181,6 +181,45 @@ class TestNoErrorsClearsRetryFile:
 class TestSplitErrorCleanup:
     """The --type must reach cleanup_partial_split, or children are orphaned."""
 
+    def test_split_submit_failed_stays_out_of_the_retry_batch(self, workspace):
+        """The quarantined class must not re-enter through the retry loop:
+        an automated retry of a partially-applied split can mint duplicate
+        children (RHAIFIRST-571)."""
+        _rfe_task(workspace, "RHAIRFE-10", status="Archived")
+        _write_review(
+            workspace, "rfe-reviews", "RHAIRFE-10", "rfe_id", "split_submit_failed: exit 4"
+        )
+        _rfe_task(workspace, "RHAIRFE-20")
+        _write_review(workspace, "rfe-reviews", "RHAIRFE-20", "rfe_id", "review_failed: timeout")
+        _set_ids(workspace, "RHAIRFE-10", "RHAIRFE-20")
+
+        stdout, stderr, rc = _run(workspace)
+        assert rc == 0, stderr
+        assert "excluded from retry" in stdout and "RHAIRFE-10" in stdout
+
+        retry_ids = (workspace / "tmp/pipeline-retry-ids.txt").read_text().split()
+        assert retry_ids == ["RHAIRFE-20"]
+        batch = (workspace / "tmp/pipeline-batch-3-ids.txt").read_text().split()
+        assert batch == ["RHAIRFE-20"]
+
+    def test_only_non_retryable_errors_clears_the_retry_file(self, workspace):
+        """All errors non-retryable → same contract as zero errors: cleared
+        file routes ERROR_COLLECT to REPORT (RHAIFIRST-581 path)."""
+        _rfe_task(workspace, "RHAIRFE-10", status="Archived")
+        _write_review(
+            workspace,
+            "rfe-reviews",
+            "RHAIRFE-10",
+            "rfe_id",
+            "split_refused: too many leaf children",
+        )
+        _set_ids(workspace, "RHAIRFE-10")
+
+        stdout, stderr, rc = _run(workspace)
+        assert rc == 0, stderr
+        assert "no retryable error IDs" in stdout
+        assert (workspace / "tmp/pipeline-retry-ids.txt").read_text().strip() == ""
+
     def test_split_submit_failed_does_not_clean_children(self, workspace):
         """A split_submit failure may be PARTIALLY APPLIED in Jira — deleting
         the local child files would orphan Jira twins that already exist

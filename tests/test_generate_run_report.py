@@ -568,6 +568,34 @@ class TestRefusedSplitIsBlockedNotSplit:
         assert report["results"]["split"] == 1
         assert report["results"]["blocked"] == 0
 
+    def test_crashed_split_counts_failed_not_split(self, art_dir):
+        """A split_submit crash leaves recommendation: split on the review —
+        counting it as a successful split reported the crash as an outcome
+        (RHAIFIRST-571)."""
+        _write(
+            f"{art_dir}/rfe-tasks/RHAIRFE-100.md",
+            TASK_TEMPLATE.format(rfe_id="RHAIRFE-100", extra=""),
+        )
+        _write(
+            f"{art_dir}/rfe-reviews/RHAIRFE-100-review.md",
+            REVIEW_REFUSED_TEMPLATE.format(
+                rfe_id="RHAIRFE-100",
+                reason="Split submission failed partway (exit 4).",
+                error="split_submit_failed: exit 4",
+            ),
+        )
+
+        report = build_report(["RHAIRFE-100"], "20260831-120000", artifacts_dir=art_dir)
+
+        assert report["results"]["failed"] == 1
+        assert report["results"]["split"] == 0
+        assert report["results"]["blocked"] == 0
+        entry = report["per_rfe"][0]
+        assert entry["failed_reason"].startswith("Split submission failed")
+        assert "blocked_reason" not in entry
+        # Not an error entry: the review is readable and the scores are real.
+        assert report["errors"] == []
+
     def test_unrelated_review_error_is_not_blocked(self, art_dir):
         """Only the split_refused marker means blocked, not any error field."""
         _write(

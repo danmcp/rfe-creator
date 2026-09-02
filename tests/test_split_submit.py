@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """Tests for scripts/split_submit.py — guardrails and ADF output."""
 
+import io
 import os
 import subprocess
 import sys
+import urllib.error
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
-from split_submit import SubmissionState, build_split_summary_adf
+from split_submit import (
+    EXIT_PER_PARENT,
+    EXIT_SYSTEMIC,
+    SubmissionState,
+    _classify_exit,
+    build_split_summary_adf,
+)
 
 SCRIPT = os.path.join(os.path.dirname(__file__), "..", "scripts", "split_submit.py")
 
@@ -158,3 +166,44 @@ class TestSplitSummaryAdf:
         item = adf["content"][1]["content"][0]
         url = item["content"][0]["content"][0]["attrs"]["url"]
         assert "//" not in url.replace("https://", "")
+
+
+def _http_error(code):
+    return urllib.error.HTTPError("http://x", code, "err", {}, io.BytesIO(b""))
+
+
+class TestClassifyExit:
+    """The exit-code contract submit.py's loop policy relies on: systemic
+    failures (dead auth, outage) fail every parent identically; everything
+    else says nothing about the next parent (RHAIFIRST-571)."""
+
+    @pytest.mark.parametrize("code", [401, 403, 429, 500, 501, 502, 503, 504, 521])
+    def test_systemic_http_codes(self, code):
+        """Any 5xx is a server-side fault: a bare 500 is re-raised by
+        api_call_with_retry without retrying, and misreading an
+        instance-wide 500 as per-parent fans out across the batch
+        (CodeRabbit on #170)."""
+        assert _classify_exit(_http_error(code)) == EXIT_SYSTEMIC
+
+    @pytest.mark.parametrize("code", [400, 404, 409, 422])
+    def test_per_parent_http_codes(self, code):
+        assert _classify_exit(_http_error(code)) == EXIT_PER_PARENT
+
+    def test_network_error_is_systemic(self):
+        assert _classify_exit(urllib.error.URLError("no route")) == EXIT_SYSTEMIC
+
+    def test_local_errors_are_per_parent(self):
+        assert _classify_exit(ValueError("bad artifact")) == EXIT_PER_PARENT
+        assert _classify_exit(FileNotFoundError("gone")) == EXIT_PER_PARENT
+
+
+class TestUsageExitCode:
+    def test_malformed_argv_exits_64_not_2(self):
+        """argparse's default exit 2 reads as the leaf-cap refusal to
+        submit.py — usage errors must be distinguishable."""
+        r = subprocess.run(
+            [sys.executable, SCRIPT, "--no-such-flag"],
+            capture_output=True,
+            text=True,
+        )
+        assert r.returncode == 64
