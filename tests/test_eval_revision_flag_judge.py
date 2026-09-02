@@ -2,9 +2,9 @@
 """Tests for the ``revision_flag_consistency`` inline-check judge.
 
 The judge body lives inline in both ``eval.yaml`` (rfe.speedrun) and
-``eval-initiative.yaml`` (initiative-speedrun). The PR that added it relies on
-the two copies being byte-identical; ``test_both_configs_identical`` fails the
-build if they ever drift. The behavioural tests exec the body exactly the way
+``eval-initiative.yaml`` (initiative-speedrun) and the two copies must remain
+byte-identical; ``test_both_configs_identical`` fails the build if they drift.
+The behavioural tests exec the body exactly the way
 the harness does (``def _check(outputs): <indented body>``) against crafted
 ``outputs`` records, so the logic has real coverage even though it is stored as
 YAML text rather than an importable module.
