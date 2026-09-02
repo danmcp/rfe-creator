@@ -319,3 +319,34 @@ def test_before_scores_without_scores_not_flagged():
         }
     )
     assert passed is True
+
+
+def test_non_list_report_section_does_not_raise():
+    # per_rfe as a dict (not a list) must not raise on dict + list concatenation.
+    passed, _ = _run(
+        {
+            f"{RFE_REVIEWS}/RFE-27-review.md": _review(
+                "RFE-27", auto_revised=True, score=8, before_score=6
+            ),
+            "artifacts/auto-fix-runs/r.yaml": yaml.safe_dump(
+                {"per_rfe": {"id": "RFE-27", "revision_cycles": 1}}
+            ),
+        }
+    )
+    assert passed is True
+
+
+def test_non_int_revision_cycles_ignored():
+    # A string/bool revision_cycles must not raise inside max(); it is ignored,
+    # so it cannot invent revision evidence.
+    passed, _ = _run(
+        {
+            f"{RFE_REVIEWS}/RFE-28-review.md": _review(
+                "RFE-28", auto_revised=False, score=8, before_score=8
+            ),
+            "artifacts/auto-fix-runs/r.yaml": yaml.safe_dump(
+                {"per_rfe": [{"id": "RFE-28", "revision_cycles": "1"}]}
+            ),
+        }
+    )
+    assert passed is True
