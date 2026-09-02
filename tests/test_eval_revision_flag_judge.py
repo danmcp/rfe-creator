@@ -350,3 +350,18 @@ def test_non_int_revision_cycles_ignored():
         }
     )
     assert passed is True
+
+
+def test_malformed_id_is_skipped_valid_review_decides():
+    # A non-string id (list/dict) is truthy but unhashable; it must be skipped,
+    # not crash on cycles.get(item_id), and a valid review still decides.
+    malformed = "---\nrfe_id:\n  - RFE-BAD\nscore: 8\nauto_revised: false\n---\n"
+    valid = _review("RFE-30", auto_revised=False, score=8, before_score=6)
+    passed, msg = _run(
+        {
+            f"{RFE_REVIEWS}/RFE-bad-review.md": malformed,
+            f"{RFE_REVIEWS}/RFE-30-review.md": valid,
+        }
+    )
+    assert passed is False
+    assert "RFE-30" in msg

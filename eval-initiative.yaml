@@ -353,7 +353,10 @@ judges:
           if not isinstance(fm, dict):
               continue
           item_id = fm.get("rfe_id") or fm.get("initiative_id")
-          if not item_id:
+          # A malformed id (list/dict) is truthy but unhashable; require a real
+          # string so cycles.get(item_id) below cannot raise and silently drop
+          # the case from the 1.0 gate.
+          if not isinstance(item_id, str) or not item_id:
               continue
           checked += 1
           # Legacy artifacts stored the flag as `revised`; artifact_utils migrates it
