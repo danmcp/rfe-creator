@@ -135,25 +135,44 @@ def _extract_adf_text(node):
     return _extract_adf_text(node.get("content", []))
 
 
-def _content_matches_artifact(server, user, token, child_key, artifact_path, config):
-    """True when the live child's description matches the artifact body.
+def _inspect_child(server, user, token, child_key, artifact_path, parent_key, config):
+    """One GET: does the live child match the artifact, and is it linked?
 
-    Same normalize-and-compare check_description_conflict uses: the local
+    Returns {"content_matches", "title", "linked"}. The content comparison is
+    the same normalize-and-compare check_description_conflict uses: the local
     side is the cleaned markdown phase 2 would submit, the live side is the
-    child's ADF description rendered back to markdown.
+    child's ADF description rendered back to markdown. `linked` is DERIVED
+    from the live issuelinks rather than assumed from the signal that found
+    the child (CodeRabbit: a confirmation comment implies the link only for
+    comments this tool wrote in order) — a missing link is then healed by
+    phase 2's completion path instead of silently skipped.
     """
     from jira_utils import adf_to_markdown, normalize_for_compare
 
     _, _, _, cleaned = config["parse_child_fn"](artifact_path)
-    issue = get_issue(server, user, token, child_key, ["description"])
-    desc_raw = issue.get("fields", {}).get("description")
+    issue = get_issue(server, user, token, child_key, ["description", "summary", "issuelinks"])
+    fields = issue.get("fields", {})
+    desc_raw = fields.get("description")
     if isinstance(desc_raw, dict):
         live = normalize_for_compare(adf_to_markdown(desc_raw))
     elif desc_raw is None:
         live = ""
     else:
         live = normalize_for_compare(str(desc_raw))
-    return normalize_for_compare(cleaned) == live
+    linked = any(
+        link.get("type", {}).get("name") == "Work item split"
+        and parent_key
+        in (
+            (link.get("inwardIssue") or {}).get("key"),
+            (link.get("outwardIssue") or {}).get("key"),
+        )
+        for link in fields.get("issuelinks", [])
+    )
+    return {
+        "content_matches": normalize_for_compare(cleaned) == live,
+        "title": fields.get("summary", ""),
+        "linked": linked,
+    }
 
 
 def _child_fingerprint(config, artifact_path):
@@ -247,8 +266,8 @@ def discover_state(server, user, token, parent_key, expected_children, config):
             # compares its size against the CURRENT total.
             return
         try:
-            matches = _content_matches_artifact(
-                server, user, token, created_key, path_by_id[child_id], config
+            live = _inspect_child(
+                server, user, token, created_key, path_by_id[child_id], parent_key, config
             )
         except Exception as e:
             print(
@@ -257,16 +276,19 @@ def discover_state(server, user, token, parent_key, expected_children, config):
                 file=sys.stderr,
             )
             return
-        if not matches:
+        if not live["content_matches"] or live["title"] != title_by_id.get(child_id):
             print(
                 f"  Warning: {created_key} is confirmed for {child_id} but its "
-                f"content does not match the current artifact — not adopting it",
+                f"content or title does not match the current artifact — not "
+                f"adopting it",
                 file=sys.stderr,
             )
             return
         state.phase2_done[child_id] = {
             "key": created_key,
-            "linked": True,
+            # Derived, not assumed: a forged or out-of-order comment must not
+            # make phase 2 skip the link — a missing one is completed there.
+            "linked": live["linked"],
             "commented": True,
         }
         state.phase1_done.setdefault(child_id, comment_id)
@@ -355,9 +377,10 @@ def discover_state(server, user, token, parent_key, expected_children, config):
             # adopt a stale child from an earlier attempt whose body no
             # longer matches the artifact this run would submit.
             try:
-                matches = _content_matches_artifact(
-                    server, user, token, child_key, path_by_id[child_id], config
+                live = _inspect_child(
+                    server, user, token, child_key, path_by_id[child_id], parent_key, config
                 )
+                matches = live["content_matches"]
             except Exception as e:
                 print(
                     f"  Warning: could not verify {child_key} against {child_id}'s "

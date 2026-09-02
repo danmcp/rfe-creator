@@ -481,6 +481,9 @@ class TestLegacyComments:
 
         assert state.phase1_done.get("RFE-001")
         assert state.phase2_done["RFE-001"]["key"] == "RHAIRFE-77"
+        # The fixture never created the link: linked is DERIVED from the
+        # live issue, not assumed from the comment — phase 2 heals it.
+        assert state.phase2_done["RFE-001"]["linked"] is False
         assert "RFE-002" not in state.phase2_done
 
     def test_confirmed_child_with_changed_content_is_not_adopted(self, art_dir, jira):
@@ -533,6 +536,31 @@ class TestLegacyComments:
             jira.url, "admin", "admin", PARENT_KEY, children, state, art_dir, config, False
         )
         assert len(_search_keys(jira.url, "labels = rfe-creator-split-result")) == 1
+
+    def test_forged_confirmation_with_wrong_title_is_refused(self, art_dir, jira):
+        """A confirmation comment can be written by anyone who can comment
+        on the parent (CodeRabbit, CWE-345): a referenced issue must also
+        match the expected title, not just the description."""
+        children = _setup_parent(jira, art_dir, child_ids=("RFE-001",))
+        from artifact_utils import parse_child_artifact
+
+        _, _, _, cleaned = parse_child_artifact(f"{art_dir}/rfe-tasks/RFE-001.md")
+        # Same description, different title.
+        jira.create("RHAIRFE-666", "Totally unrelated ticket", cleaned)
+        add_comment(
+            jira.url,
+            "admin",
+            "admin",
+            PARENT_KEY,
+            text_to_adf_paragraph(
+                "[RFE Creator] Created as RHAIRFE-666 for RFE-001, linked to parent. (1 of 1)"
+            ),
+        )
+
+        config = SPLIT_CONFIG["rfe"]
+        state = discover_state(jira.url, "admin", "admin", PARENT_KEY, children, config)
+
+        assert "RFE-001" not in state.phase2_done
 
     def test_positional_comments_ignored_when_the_set_shrank(self, art_dir, jira):
         """A legacy comment recorded '1 of 2'; the decomposition was revised
