@@ -497,7 +497,12 @@ class TestLegacyComments:
         """Comments written before the id-based format map through the
         current ordering, so in-flight legacy splits keep recovering."""
         children = _setup_parent(jira, art_dir)
-        jira.create("RHAIRFE-77", "Child RFE-001", "Child one content.")
+        # The live child's content must match the artifact — legacy adoption
+        # goes through the same content guard as everything else now.
+        from artifact_utils import parse_child_artifact
+
+        _, _, _, cleaned = parse_child_artifact(f"{art_dir}/rfe-tasks/RFE-001.md")
+        jira.create("RHAIRFE-77", "Child RFE-001", cleaned)
         add_comment(
             jira.url,
             "admin",
@@ -521,6 +526,57 @@ class TestLegacyComments:
         assert state.phase1_done.get("RFE-001")
         assert state.phase2_done["RFE-001"]["key"] == "RHAIRFE-77"
         assert "RFE-002" not in state.phase2_done
+
+    def test_confirmed_child_with_changed_content_is_not_adopted(self, art_dir, jira):
+        """The confirmation comment was the one adoption path with no
+        content check: a cross-run re-split silently bound attempt 1's
+        confirmed child into attempt 2's decomposition. One GET per
+        comment-adopted child closes it."""
+        children = _setup_parent(jira, art_dir, child_ids=("RFE-001",))
+        config = SPLIT_CONFIG["rfe"]
+        state = discover_state(jira.url, "admin", "admin", PARENT_KEY, children, config)
+        phase1_persist(jira.url, "admin", "admin", PARENT_KEY, children, state, config, False)
+        phase2_create_link(
+            jira.url, "admin", "admin", PARENT_KEY, children, state, art_dir, config, False
+        )
+        assert state.phase2_done["RFE-001"]["commented"] is True
+
+        # Attempt 2: same id, same title, different body.
+        _write(
+            f"{art_dir}/rfe-tasks/RFE-001.md",
+            CHILD_TASK.format(child_id="RFE-001", title="Child RFE-001").replace(
+                "Content for RFE-001.", "Entirely different scope."
+            ),
+        )
+        new_children = [("RFE-001", "Child RFE-001", "Major", f"{art_dir}/rfe-tasks/RFE-001.md")]
+        state = discover_state(jira.url, "admin", "admin", PARENT_KEY, new_children, config)
+        assert "RFE-001" not in state.phase2_done, (
+            "confirmed stale child adopted despite content change"
+        )
+
+        phase2_create_link(
+            jira.url, "admin", "admin", PARENT_KEY, new_children, state, art_dir, config, False
+        )
+        assert len(_search_keys(jira.url, "labels = rfe-creator-split-result")) == 2
+
+    def test_confirmed_child_with_matching_content_is_adopted(self, art_dir, jira):
+        """The guard must not break the resume that matters: identical
+        artifact -> adoption, no duplicate, no re-confirmation."""
+        children = _setup_parent(jira, art_dir, child_ids=("RFE-001",))
+        config = SPLIT_CONFIG["rfe"]
+        state = discover_state(jira.url, "admin", "admin", PARENT_KEY, children, config)
+        phase1_persist(jira.url, "admin", "admin", PARENT_KEY, children, state, config, False)
+        phase2_create_link(
+            jira.url, "admin", "admin", PARENT_KEY, children, state, art_dir, config, False
+        )
+
+        state = discover_state(jira.url, "admin", "admin", PARENT_KEY, children, config)
+        assert state.phase2_done["RFE-001"]["commented"] is True
+
+        phase2_create_link(
+            jira.url, "admin", "admin", PARENT_KEY, children, state, art_dir, config, False
+        )
+        assert len(_search_keys(jira.url, "labels = rfe-creator-split-result")) == 1
 
     def test_positional_comments_ignored_when_the_set_shrank(self, art_dir, jira):
         """A legacy comment recorded '1 of 2'; the decomposition was revised

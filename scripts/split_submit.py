@@ -177,6 +177,27 @@ def _extract_adf_text(node):
     return _extract_adf_text(node.get("content", []))
 
 
+def _content_matches_artifact(server, user, token, child_key, artifact_path, config):
+    """True when the live child's description matches the artifact body.
+
+    Same normalize-and-compare check_description_conflict uses: the local
+    side is the cleaned markdown phase 2 would submit, the live side is the
+    child's ADF description rendered back to markdown.
+    """
+    from jira_utils import adf_to_markdown, normalize_for_compare
+
+    _, _, _, cleaned = config["parse_child_fn"](artifact_path)
+    issue = get_issue(server, user, token, child_key, ["description"])
+    desc_raw = issue.get("fields", {}).get("description")
+    if isinstance(desc_raw, dict):
+        live = normalize_for_compare(adf_to_markdown(desc_raw))
+    elif desc_raw is None:
+        live = ""
+    else:
+        live = normalize_for_compare(str(desc_raw))
+    return normalize_for_compare(cleaned) == live
+
+
 def _child_fingerprint(config, artifact_path):
     """Short content fingerprint of the child's cleaned markdown body."""
     import hashlib
@@ -247,6 +268,50 @@ def discover_state(server, user, token, parent_key, expected_children, config):
     marker = re.escape(config["comment_marker"])
     ids_in_order = [child_id for (child_id, _, _, _) in expected_children]
     id_by_title = {title: child_id for (child_id, title, _, _) in expected_children}
+    title_by_id = {child_id: title for (child_id, title, _, _) in expected_children}
+    path_by_id = {child_id: path for (child_id, _, _, path) in expected_children}
+
+    def _adopt_confirmed(child_id, created_key, comment_id):
+        """Adopt a confirmation-comment match only when the live child's
+        content is the artifact this run would submit.
+
+        The comment signal was the one adoption path with no content check:
+        on a cross-run re-split it silently bound attempt 1's confirmed
+        child (old content) into attempt 2's decomposition. Refusal falls
+        through to the marker search and a fresh create — the same
+        prefer-a-visible-duplicate-over-silent-misbinding rule the marker
+        path already applies. The GET is recovery-only and per adopted
+        child, at most the leaf cap.
+        """
+        if child_id not in path_by_id:
+            # A comment naming a child that no longer exists (removed in a
+            # re-split) must not inflate phase2_done — phase3's count guard
+            # compares its size against the CURRENT total.
+            return
+        try:
+            matches = _content_matches_artifact(
+                server, user, token, created_key, path_by_id[child_id], config
+            )
+        except Exception as e:
+            print(
+                f"  Warning: could not verify {created_key} against {child_id}'s "
+                f"artifact ({e}) — not adopting it",
+                file=sys.stderr,
+            )
+            return
+        if not matches:
+            print(
+                f"  Warning: {created_key} is confirmed for {child_id} but its "
+                f"content does not match the current artifact — not adopting it",
+                file=sys.stderr,
+            )
+            return
+        state.phase2_done[child_id] = {
+            "key": created_key,
+            "linked": True,
+            "commented": True,
+        }
+        state.phase1_done.setdefault(child_id, comment_id)
 
     def _id_at(idx):
         """Map a legacy positional index to a child id, best effort."""
@@ -288,16 +353,8 @@ def discover_state(server, user, token, parent_key, expected_children, config):
                 # resume would re-post its archival comment and re-adopt it
                 # through the link signal.
                 child_id = created_key
-            if child_id in set(ids_in_order):
-                # A comment naming a child that no longer exists (removed in
-                # a re-split) must not inflate phase2_done — phase3's count
-                # guard compares its size against the CURRENT total.
-                state.phase2_done[child_id] = {
-                    "key": created_key,
-                    "linked": True,
-                    "commented": True,
-                }
-                state.phase1_done.setdefault(child_id, comment["id"])
+            if child_id not in state.phase2_done:
+                _adopt_confirmed(child_id, created_key, comment["id"])
             continue
 
         legacy_confirm = re.search(
@@ -311,11 +368,7 @@ def discover_state(server, user, token, parent_key, expected_children, config):
                 else None
             )
             if child_id and child_id not in state.phase2_done:
-                state.phase2_done[child_id] = {
-                    "key": legacy_confirm.group(1),
-                    "linked": True,
-                    "commented": True,
-                }
+                _adopt_confirmed(child_id, legacy_confirm.group(1), comment["id"])
             continue
 
     # 2. Check issue links, components, labels, and Jira parent
@@ -340,6 +393,27 @@ def discover_state(server, user, token, parent_key, expected_children, config):
         child_summary = other.get("fields", {}).get("summary", "")
         child_id = id_by_title.get(child_summary)
         if child_id and child_id not in state.phase2_done:
+            # Same content guard as the comment path: the title alone would
+            # adopt a stale child from an earlier attempt whose body no
+            # longer matches the artifact this run would submit.
+            try:
+                matches = _content_matches_artifact(
+                    server, user, token, child_key, path_by_id[child_id], config
+                )
+            except Exception as e:
+                print(
+                    f"  Warning: could not verify {child_key} against {child_id}'s "
+                    f"artifact ({e}) — not adopting it",
+                    file=sys.stderr,
+                )
+                continue
+            if not matches:
+                print(
+                    f"  Warning: {child_key} is linked and matches {child_id}'s title "
+                    f"but not its content — not adopting it",
+                    file=sys.stderr,
+                )
+                continue
             state.phase2_done[child_id] = {
                 "key": child_key,
                 "linked": True,
@@ -351,8 +425,6 @@ def discover_state(server, user, token, parent_key, expected_children, config):
     #     the link and the comment — previously undiscoverable, so the next
     #     run minted a duplicate (RHAIFIRST-570).
     label_prefix = config["label_prefix"]
-    title_by_id = {child_id: title for (child_id, title, _, _) in expected_children}
-    path_by_id = {child_id: path for (child_id, _, _, path) in expected_children}
     unmapped = [cid for cid in ids_in_order if cid not in state.phase2_done]
     if unmapped:
         markers = [
