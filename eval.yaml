@@ -295,9 +295,12 @@ judges:
       # (rfe-tasks/rfe-originals vs initiatives/initiative-originals).
       names = {os.path.basename(k) for k in files}
       originals = {os.path.basename(k) for k in files if "-originals/" in k}
-      # revision_cycles per item from the shared run report
+      # revision_cycles per item from the shared run report. Iterate sorted and merge
+      # with max so a stale report can't nondeterministically mask a newer one's
+      # revision evidence with a 0.
       cycles = {}
-      for k, v in files.items():
+      for k in sorted(files):
+          v = files[k]
           if not (k.startswith("artifacts/auto-fix-runs/") and k.endswith(".yaml")):
               continue
           # Snapshot files (issue-snapshot-*, initiative-snapshot-*) are fetch
@@ -314,7 +317,9 @@ judges:
               continue
           for entry in (report.get("per_rfe") or []) + (report.get("per_initiative") or []):
               if isinstance(entry, dict) and entry.get("id"):
-                  cycles[entry["id"]] = entry.get("revision_cycles") or 0
+                  cycles[entry["id"]] = max(
+                      cycles.get(entry["id"], 0), entry.get("revision_cycles") or 0
+                  )
       errors = []
       checked = 0
       for fname, content in sorted(reviews.items()):
@@ -353,13 +358,16 @@ judges:
                       parsed = json.loads(state)
                   except ValueError:
                       parsed = None
-                  if isinstance(parsed, dict) and (parsed.get("revision_history") or "").strip():
-                      strong.append("review-state records a revision")
+                  if isinstance(parsed, dict):
+                      history = parsed.get("revision_history")
+                      # Normally a string; guard non-str so .strip() cannot raise.
+                      if history.strip() if isinstance(history, str) else history:
+                          strong.append("review-state records a revision")
           before, score = fm.get("before_score"), fm.get("score")
           if before is not None and score is not None and before != score:
               strong.append(f"before_score {before} != score {score}")
-          before_scores = fm.get("before_scores")
-          if before_scores is not None and before_scores != fm.get("scores"):
+          before_scores, cur_scores = fm.get("before_scores"), fm.get("scores")
+          if before_scores is not None and cur_scores is not None and before_scores != cur_scores:
               strong.append("before_scores != scores")
           # Written only when a revision removes content, so its presence proves a
           # revision even if the re-score landed on the same number.

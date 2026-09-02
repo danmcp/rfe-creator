@@ -275,3 +275,47 @@ def test_dashes_in_frontmatter_value_not_truncated():
     )
     passed, _ = _run({f"{RFE_REVIEWS}/RFE-23-review.md": content})
     assert passed is True
+
+
+def test_stale_report_does_not_mask_revision_evidence():
+    # Two reports name the same id; the alphabetically-later one says 0 cycles.
+    # Merging with max (not last-write-wins) keeps the revision evidence.
+    passed, msg = _run(
+        {
+            f"{RFE_REVIEWS}/RFE-24-review.md": _review(
+                "RFE-24", auto_revised=False, score=8, before_score=8
+            ),
+            "artifacts/auto-fix-runs/aaa.yaml": yaml.safe_dump(
+                {"per_rfe": [{"id": "RFE-24", "revision_cycles": 1}]}
+            ),
+            "artifacts/auto-fix-runs/zzz.yaml": yaml.safe_dump(
+                {"per_rfe": [{"id": "RFE-24", "revision_cycles": 0}]}
+            ),
+        }
+    )
+    assert passed is False
+    assert "revision_cycles" in msg
+
+
+def test_review_state_history_non_string_does_not_crash():
+    # revision_history is normally a string; a list/dict must not raise on strip.
+    passed, msg = _run(
+        {
+            f"{RFE_REVIEWS}/RFE-25-review.md": _review("RFE-25", auto_revised=False, score=8),
+            f"{RFE_REVIEWS}/RFE-25-review-state.json": '{"revision_history": ["- x"]}',
+        }
+    )
+    assert passed is False
+    assert "records a revision" in msg
+
+
+def test_before_scores_without_scores_not_flagged():
+    # before_scores present but scores absent must not be read as "scores moved".
+    passed, _ = _run(
+        {
+            f"{RFE_REVIEWS}/RFE-26-review.md": _review(
+                "RFE-26", auto_revised=False, score=8, before_scores={"what": 2}
+            ),
+        }
+    )
+    assert passed is True
