@@ -103,6 +103,58 @@ def test_saved_original_alone_never_raises_a_flag():
     assert passed is True
 
 
+def test_removed_context_raises_missed_flag():
+    # A revision that removed content but landed on the same score leaves a
+    # removed-context companion; auto_revised=false is then a missed revision.
+    passed, msg = _run({
+        f"{RFE_REVIEWS}/RFE-10-review.md": _review("RFE-10", auto_revised=False, score=7, before_score=7),
+        "artifacts/rfe-tasks/RFE-10-removed-context.yaml": "blocks: []\n",
+    })
+    assert passed is False
+    assert "removed-context" in msg
+
+
+def test_leftover_state_file_raises_missed_flag():
+    # restore() deletes the state file on a completed cycle, so a leftover one
+    # (even with empty history) is proof a re-review cycle ran.
+    passed, msg = _run({
+        f"{RFE_REVIEWS}/RFE-11-review.md": _review("RFE-11", auto_revised=False, score=7, before_score=7),
+        f"{RFE_REVIEWS}/RFE-11-review-state.json": '{"revision_history": ""}',
+    })
+    assert passed is False
+    assert "leftover review-state file" in msg
+
+
+def test_removed_context_clears_a_set_flag():
+    passed, _ = _run({
+        f"{RFE_REVIEWS}/RFE-12-review.md": _review("RFE-12", auto_revised=True, score=7),
+        "artifacts/rfe-tasks/RFE-12-removed-context.yaml": "blocks: []\n",
+    })
+    assert passed is True
+
+
+def test_saved_original_does_not_raise_unset_flag():
+    # A saved original is a weak signal: it clears a set flag but must never
+    # fail an unset one (it is also the fetch baseline, not only a backup).
+    passed, _ = _run({
+        f"{RFE_REVIEWS}/RFE-13-review.md": _review("RFE-13", auto_revised=False, score=7, before_score=7),
+        "artifacts/rfe-originals/RFE-13.md": "old body",
+    })
+    assert passed is True
+
+
+def test_revision_cycles_divergence_flagged():
+    # The run report says a revision happened but the frontmatter flag is unset.
+    passed, msg = _run({
+        f"{RFE_REVIEWS}/RFE-14-review.md": _review("RFE-14", auto_revised=False, score=8, before_score=8),
+        "artifacts/auto-fix-runs/20260101-000000.yaml": yaml.safe_dump(
+            {"per_rfe": [{"id": "RFE-14", "revision_cycles": 1}]}
+        ),
+    })
+    assert passed is False
+    assert "revision_cycles" in msg
+
+
 def test_initiative_pipeline_flag_false_but_revised():
     passed, msg = _run({
         f"{INIT_REVIEWS}/INIT-1-review.md": _review("INIT-1", id_field="initiative_id", auto_revised=False, score=8),
