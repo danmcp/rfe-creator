@@ -114,7 +114,10 @@ class TestSplitSummaryAdf:
     def test_produces_inline_cards(self):
         """Summary ADF uses inlineCard nodes for child keys."""
         state = SubmissionState()
-        state.phase2_done = {1: "RHAIRFE-100", 2: "RHAIRFE-101"}
+        state.phase2_done = {
+            "RFE-001": {"key": "RHAIRFE-100", "linked": True, "commented": True},
+            "RFE-002": {"key": "RHAIRFE-101", "linked": True, "commented": True},
+        }
         children = [
             ("RFE-001", "First child", "Major", "/fake/path1"),
             ("RFE-002", "Second child", "Major", "/fake/path2"),
@@ -139,7 +142,7 @@ class TestSplitSummaryAdf:
             para = item["content"][0]
             inline_card = para["content"][0]
             assert inline_card["type"] == "inlineCard"
-            expected_key = state.phase2_done[i + 1]
+            expected_key = state.phase2_done[children[i][0]]["key"]
             assert inline_card["attrs"]["url"] == f"https://jira.example.com/browse/{expected_key}"
 
     def test_strips_trailing_slash(self):
@@ -148,7 +151,7 @@ class TestSplitSummaryAdf:
 
         rfe_config = SPLIT_CONFIG["rfe"]
         state = SubmissionState()
-        state.phase2_done = {1: "RHAIRFE-100"}
+        state.phase2_done = {"RFE-001": {"key": "RHAIRFE-100", "linked": True, "commented": True}}
         children = [("RFE-001", "Child", "Major", "/fake/path")]
         adf = build_split_summary_adf("https://jira.example.com/", children, state, 1, rfe_config)
 

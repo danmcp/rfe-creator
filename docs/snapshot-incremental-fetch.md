@@ -31,6 +31,7 @@ filler within the limit.
 |--------|--------|-------|-----------|
 | `statusCategory != Done` | JQL | JQL | Closed issues never need processing |
 | `rfe-creator-ignore` | JQL | JQL | Permanent human override — never touch |
+| `rfe-creator-split-quarantine` | JQL | JQL | Split failed partway — parked until a human removes it (RHAIFIRST-570; see [split-quarantine.md](split-quarantine.md)) |
 | `rfe-creator-autofix-rubric-pass` | JQL | Hash diff | If someone edits a passing RFE, we should see it |
 | `rfe-creator-needs-attention` | Not filtered | Hash diff | If a human resolves the flag and revises the description, we should re-evaluate |
 | `rfe-creator-feasibility-pass` | Not filtered | Hash diff | Informational verdict; description change triggers re-review and may flip the label |
@@ -329,7 +330,8 @@ desired processing outcome:
 
 ```
 (<user-jql>) AND statusCategory != Done
-             AND (labels not in (rfe-creator-ignore) OR labels is EMPTY)
+             AND (labels not in (rfe-creator-ignore, rfe-creator-split-quarantine)
+                  OR labels is EMPTY)
 ```
 
 These filters are "hard" because an issue matching them should always be
