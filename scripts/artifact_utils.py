@@ -459,25 +459,36 @@ def _yaml_error_message(path, yaml_str, exc):
 
 
 def _looks_like_frontmatter_block(text):
-    """Heuristic: does `text` (the region between two `---` lines) plausibly hold
-    a YAML mapping, rather than body prose a stray `---` rule was mistaken for?
+    """Does `text` (the region between two `---` lines) hold real frontmatter,
+    rather than body prose a stray `---` rule was mistaken for?
 
-    Frontmatter written by this tool is a contiguous run of `key: value` lines.
-    A blank line, or a line that is neither a mapping key nor an indented
-    continuation/list item, means the matched closing `---` is almost certainly a
-    body horizontal rule — so the region above it is body and must be preserved,
-    not stripped.
+    Valid frontmatter parses cleanly to a mapping, so that is the fast path (and
+    covers list- or nested-map values). The repair path must also recognise a
+    *malformed* mapping — the unquoted-colon corruption this feature targets — so
+    a fallback accepts a contiguous run of `key: value` lines. Anything else
+    means the matched `---` is almost certainly a body horizontal rule, so the
+    region is body and must be preserved, not stripped:
+
+    - a blank line (frontmatter this tool writes has none),
+    - a top-level `- ` sequence item not under a key (never valid frontmatter for
+      these schemas, and the mixed map+sequence shape below is invalid YAML),
+    - a prose line or a markdown heading (`#` is a YAML comment).
     """
+    try:
+        if isinstance(yaml.safe_load(text), dict):
+            return True
+    except yaml.YAMLError:
+        pass  # fall through to the malformed-but-recoverable mapping check
     saw_key = False
     for line in text.splitlines():
         if not line.strip():
             return False  # blank line — we have run past the real block into body
-        if line[0] in " \t-":
-            continue  # indented continuation or a "- list" item
+        if line[0] in " \t":
+            continue  # indented continuation of a value
         if re.match(r"[^\s:#][^:]*:(\s|$)", line):
             saw_key = True
             continue
-        return False  # prose, a markdown heading, etc.
+        return False  # prose, a markdown heading, or a top-level "- " list item
     return saw_key
 
 

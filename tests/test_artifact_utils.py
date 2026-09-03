@@ -572,6 +572,23 @@ class TestBodyRuleNotMistakenForDelimiter:
         assert "Real body." in w
         assert read_frontmatter("w.md")[0]["rfe_id"] == "RFE-015"
 
+    def test_update_keeps_mapping_like_markdown_body(self, tmp_dir):
+        """A body that opens with `---`, a `key: value` line, and a `- ` list
+        item, then another `---`, is invalid YAML but must not be stripped.
+
+        The mapping key alone looks frontmatter-ish, but the top-level sequence
+        item makes it invalid YAML and never real frontmatter — so the region is
+        body and must survive the repair.
+        """
+        _write("review.md", "---\nSummary: needs review\n- investigate\n---\n\nReal body.\n")
+        update_frontmatter("review.md", dict(self.FIELDS), "rfe-review")
+        with open("review.md") as f:
+            out = f.read()
+        assert "Summary: needs review" in out
+        assert "- investigate" in out
+        assert "Real body." in out
+        assert read_frontmatter("review.md")[0]["rfe_id"] == "RFE-015"
+
 
 class TestLooksLikeFrontmatterBlock:
     def test_key_value_lines_are_a_block(self):
@@ -582,6 +599,16 @@ class TestLooksLikeFrontmatterBlock:
 
     def test_nested_mapping_is_a_block(self):
         assert _looks_like_frontmatter_block("scores:\n  what: 2\n  why: 2\n")
+
+    def test_valid_list_value_is_a_block(self):
+        # yaml.dump writes list values as "- item" at column 0; the parse-to-dict
+        # fast path must still recognise this as real frontmatter.
+        assert _looks_like_frontmatter_block("labels:\n- a\n- b\n")
+
+    def test_mapping_then_top_level_sequence_is_not_a_block(self):
+        # A key line followed by a top-level "- " item is invalid YAML and never
+        # real frontmatter — it is a markdown body that must be preserved.
+        assert not _looks_like_frontmatter_block("Summary: needs review\n- investigate\n")
 
     def test_blank_line_means_not_a_block(self):
         assert not _looks_like_frontmatter_block("rfe_id: RFE-1\n\nprose\n")
