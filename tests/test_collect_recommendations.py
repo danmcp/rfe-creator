@@ -303,3 +303,42 @@ class TestCollectErrors:
         out, _, rc = _run(["--errors", "RFE-001"])
         assert rc == 0
         assert "RFE-001" in _parse_output(out)["ERRORS"]
+
+
+class TestCorruptReviewDoesNotCrashAnyMode:
+    """A single malformed review must not take down a batch in any mode.
+
+    read_frontmatter raises ValidationError on a bad block, so every collection
+    mode — not just --errors — has to tolerate it.
+    """
+
+    def test_default_mode_buckets_corrupt_as_error(self, art_dir):
+        _write(
+            f"{art_dir}/artifacts/rfe-reviews/RFE-001-review.md",
+            CORRUPT_REVIEW.format(rfe_id="RFE-001"),
+        )
+        _write(
+            f"{art_dir}/artifacts/rfe-reviews/RFE-002-review.md",
+            REVIEW_TEMPLATE.format(
+                rfe_id="RFE-002",
+                score=9,
+                pass_val="true",
+                recommendation="submit",
+                auto_revised="false",
+            ),
+        )
+        out, _, rc = _run(["RFE-001", "RFE-002"])
+        assert rc == 0
+        groups = _parse_output(out)
+        assert "RFE-001" in groups["ERRORS"]
+        assert "RFE-002" in groups["SUBMIT"]  # the healthy review is unaffected
+
+    def test_reassess_mode_does_not_crash_on_corrupt(self, art_dir):
+        _write(
+            f"{art_dir}/artifacts/rfe-reviews/RFE-001-review.md",
+            CORRUPT_REVIEW.format(rfe_id="RFE-001"),
+        )
+        out, _, rc = _run(["--reassess", "RFE-001"])
+        assert rc == 0
+        # Not reassessable — bucketed as done rather than crashing.
+        assert "RFE-001" in _parse_output(out)["DONE"]
