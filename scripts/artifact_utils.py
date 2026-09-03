@@ -458,16 +458,48 @@ def _yaml_error_message(path, yaml_str, exc):
     )
 
 
-def _body_without_frontmatter(path):
-    """Return the markdown body, ignoring the contents of the frontmatter block.
+def _looks_like_frontmatter_block(text):
+    """Heuristic: does `text` (the region between two `---` lines) plausibly hold
+    a YAML mapping, rather than body prose a stray `---` rule was mistaken for?
 
-    The delimiters are matched by regex, so the body is recoverable even when
-    the YAML between them does not parse.
+    Frontmatter written by this tool is a contiguous run of `key: value` lines.
+    A blank line, or a line that is neither a mapping key nor an indented
+    continuation/list item, means the matched closing `---` is almost certainly a
+    body horizontal rule — so the region above it is body and must be preserved,
+    not stripped.
+    """
+    saw_key = False
+    for line in text.splitlines():
+        if not line.strip():
+            return False  # blank line — we have run past the real block into body
+        if line[0] in " \t-":
+            continue  # indented continuation or a "- list" item
+        if re.match(r"[^\s:#][^:]*:(\s|$)", line):
+            saw_key = True
+            continue
+        return False  # prose, a markdown heading, etc.
+    return saw_key
+
+
+def _body_without_frontmatter(path):
+    """Return the markdown body, ignoring a leading frontmatter block.
+
+    The delimiters are matched by regex, so the body is recoverable even when the
+    YAML between them does not parse. But a lone `---` horizontal rule in the body
+    can be mistaken for the closing delimiter, so the leading block is stripped
+    only when it is empty or actually looks like a YAML mapping. Otherwise the
+    whole content is returned unchanged — better to leave a stale block stacked in
+    the body than to silently drop real content sitting above a body rule.
     """
     with open(path, encoding="utf-8") as f:
         content = f.read()
     match = _FRONTMATTER_RE.match(content)
-    return content[match.end() :] if match else content
+    if not match:
+        return content
+    region = match.group(1)
+    if region.strip() == "" or _looks_like_frontmatter_block(region):
+        return content[match.end() :]
+    return content
 
 
 def read_frontmatter(path):
@@ -475,10 +507,14 @@ def read_frontmatter(path):
 
     Returns:
         (data_dict, body_string) — frontmatter as dict, remainder as string.
-        Returns ({}, full_content) if no frontmatter found. An empty block
-        (`---\\n---\\n`) is valid frontmatter with no fields, so it returns
+        Returns ({}, full_content) if no frontmatter found. A genuinely empty
+        block (`---\\n---\\n`) is valid frontmatter with no fields, so it returns
         ({}, body) with the delimiters consumed — otherwise write_frontmatter
-        would leave a stale block sitting in the body.
+        would leave a stale block sitting in the body. A block that is present
+        but not a mapping (a bare scalar, or comment/heading-only content that
+        parses to null) returns ({}, full_content): the closing `---` we matched
+        may be a body horizontal rule, so the safe choice is to treat the whole
+        file as body rather than drop the region above the delimiter.
 
     Raises:
         ValidationError: if the frontmatter block is present but unparseable.
@@ -493,16 +529,23 @@ def read_frontmatter(path):
     yaml_str = match.group(1)
     body = content[match.end() :]
 
+    if yaml_str.strip() == "":
+        # A genuinely empty block is valid frontmatter with no fields. Consume
+        # the delimiters so a later write replaces it rather than stacking a
+        # second block on top. Only a *blank* block is consumed: content that
+        # merely parses to null is not — a markdown heading is a YAML comment, so
+        # `---\n## Heading\n---\nbody` also yields None, and the closing `---`
+        # there may be a body horizontal rule. Consuming up to it would silently
+        # drop the lines above.
+        return {}, body
+
     try:
         data = yaml.safe_load(yaml_str)
     except yaml.YAMLError as exc:
         raise ValidationError(_yaml_error_message(path, yaml_str, exc)) from exc
-    if data is None:
-        # An empty block is valid frontmatter with no fields. Consume the
-        # delimiters so a later write replaces the block rather than stacking a
-        # second one on top of it.
-        return {}, body
     if not isinstance(data, dict):
+        # Present but not a mapping (a bare scalar/list, or comment-only content
+        # that parsed to None). Preserve the whole file — see the docstring.
         return {}, content
 
     _migrate_fields(data)
@@ -600,8 +643,10 @@ def update_frontmatter(path, updates, schema_type):
     than merged. This is the only repair path available: every writer goes
     through here, so refusing would leave the caller no way to fix the file
     except hand-editing YAML — which is what corrupts it in the first place.
-    The validation below is the guard. Updates that do not amount to a
-    complete, valid record still fail, so nothing is dropped silently.
+    The validation below guards the *fields*: a partial update that does not
+    amount to a complete, valid record still fails. Body content is never
+    dropped — _body_without_frontmatter strips only a leading block it can
+    confidently identify as frontmatter and otherwise preserves the whole file.
 
     Raises:
         ValidationError: if merged data fails validation

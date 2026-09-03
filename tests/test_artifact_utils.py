@@ -11,6 +11,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 from artifact_utils import (
     SCHEMAS,
     ValidationError,
+    _body_without_frontmatter,
+    _looks_like_frontmatter_block,
     _migrate_fields,
     apply_defaults,
     read_frontmatter,
@@ -266,6 +268,22 @@ class TestReadFrontmatter:
         assert data["title"] == "Hello"
         assert "Body." in body
 
+    def test_regex_handles_raw_crlf(self):
+        """The `\\r?` in _FRONTMATTER_RE is what makes CRLF work — exercise it.
+
+        read_frontmatter opens files in universal-newline mode, which strips
+        every `\\r` before the content reaches the regex, so a file round-trip
+        cannot prove the `\\r?` branch fires. Match the regex against a raw CRLF
+        string to guard that robustness directly.
+        """
+        from artifact_utils import _FRONTMATTER_RE
+
+        raw = "---\r\ntitle: Hello\r\n---\r\nBody.\r\n"
+        match = _FRONTMATTER_RE.match(raw)
+        assert match is not None
+        assert match.group(1) == "title: Hello\r\n"
+        assert raw[match.end() :] == "Body.\r\n"
+
 
 # ── read_frontmatter_validated ────────────────────────────────────────────────
 
@@ -474,6 +492,116 @@ class TestUpdateFrontmatterRepair:
         # The body's own horizontal rule is the only `---` line left below the
         # block, so a duplicated empty block would show up as an extra one.
         assert content.count("\n---\n") == 2
+
+
+class TestBodyRuleNotMistakenForDelimiter:
+    """A `---` horizontal rule in the body must never be taken for the closing
+    delimiter, or the lines above it are silently dropped — the exact
+    crash->silent-truncation failure the repair path was meant to avoid.
+    """
+
+    FIELDS = {
+        "rfe_id": "RFE-015",
+        "score": 8,
+        "pass": True,
+        "recommendation": "submit",
+        "feasibility": "feasible",
+        "needs_attention": False,
+        "scores": {"what": 2, "why": 2, "open_to_how": 2, "not_a_task": 1, "right_sized": 1},
+    }
+
+    # Body-only file (per Step 3) whose body opens with a thematic-break rule and
+    # a heading. The heading is a YAML comment, so the block parses to null — but
+    # it is NOT an empty block, and the second `---` is a body rule.
+    LEADING_RULE_BODY = "---\n## Assessor Feedback\n---\n\nScores look good. Submit.\n"
+
+    def test_read_preserves_leading_rule_section(self, tmp_dir):
+        _write("review.md", self.LEADING_RULE_BODY)
+        data, body = read_frontmatter("review.md")
+        assert data == {}
+        assert body == self.LEADING_RULE_BODY  # nothing consumed
+
+    def test_update_keeps_heading_above_body_rule(self, tmp_dir):
+        _write("review.md", self.LEADING_RULE_BODY)
+        update_frontmatter("review.md", dict(self.FIELDS), "rfe-review")
+        data, body = read_frontmatter("review.md")
+        assert data["rfe_id"] == "RFE-015"
+        assert "## Assessor Feedback" in body
+        assert "Scores look good. Submit." in body
+
+    def test_unparseable_block_without_clean_close_keeps_body(self, tmp_dir):
+        """No valid closing `---`; a body rule is the first one the regex sees.
+
+        On the pre-fix repair path this truncated the body to everything below
+        the body rule, silently dropping the paragraph above it.
+        """
+        content = (
+            "---\n"
+            "rfe_id: RHAIRFE-1595\n"
+            "score: 7\n"
+            "# Review Summary\n"
+            "\n"
+            "Important analysis a stakeholder must not lose.\n"
+            "\n"
+            "---\n"
+            "\n"
+            "## Detailed scores\n"
+        )
+        _write("review.md", content)
+        update_frontmatter("review.md", dict(self.FIELDS), "rfe-review")
+        with open("review.md") as f:
+            out = f.read()
+        assert "Important analysis a stakeholder must not lose." in out
+        # And the file is now valid frontmatter that round-trips.
+        assert read_frontmatter("review.md")[0]["rfe_id"] == "RFE-015"
+
+    def test_write_and_update_agree_on_scalar_block(self, tmp_dir):
+        """The two writers must not disagree on a non-mapping block; both keep
+        the content (lossless) rather than one dropping it.
+        """
+        original = "---\njust a string\n---\nReal body.\n"
+        _write("w.md", original)
+        _write("u.md", original)
+        write_frontmatter("w.md", dict(self.FIELDS), "rfe-review")
+        update_frontmatter("u.md", dict(self.FIELDS), "rfe-review")
+        with open("w.md") as f:
+            w = f.read()
+        with open("u.md") as f:
+            u = f.read()
+        assert w == u
+        assert "Real body." in w
+        assert read_frontmatter("w.md")[0]["rfe_id"] == "RFE-015"
+
+
+class TestLooksLikeFrontmatterBlock:
+    def test_key_value_lines_are_a_block(self):
+        assert _looks_like_frontmatter_block("rfe_id: RFE-1\nscore: 8\n")
+
+    def test_value_with_colon_is_a_block(self):
+        assert _looks_like_frontmatter_block("reason: Blocked: needs input\n")
+
+    def test_nested_mapping_is_a_block(self):
+        assert _looks_like_frontmatter_block("scores:\n  what: 2\n  why: 2\n")
+
+    def test_blank_line_means_not_a_block(self):
+        assert not _looks_like_frontmatter_block("rfe_id: RFE-1\n\nprose\n")
+
+    def test_markdown_heading_is_not_a_block(self):
+        assert not _looks_like_frontmatter_block("## Assessor Feedback\n")
+
+    def test_prose_is_not_a_block(self):
+        assert not _looks_like_frontmatter_block("Some analysis without a colon\n")
+
+    def test_empty_is_not_a_block(self):
+        assert not _looks_like_frontmatter_block("")
+
+    def test_body_without_frontmatter_preserves_non_block(self, tmp_dir):
+        _write("f.md", "---\n## Heading\n---\nbody\n")
+        assert _body_without_frontmatter("f.md") == "---\n## Heading\n---\nbody\n"
+
+    def test_body_without_frontmatter_strips_real_block(self, tmp_dir):
+        _write("f.md", "---\nrfe_id: RFE-1\n---\nbody\n")
+        assert _body_without_frontmatter("f.md") == "body\n"
 
 
 # ── Initiative schemas ───────────────────────────────────────────────────────
