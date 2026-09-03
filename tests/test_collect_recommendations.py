@@ -3,6 +3,7 @@
 
 import os
 import subprocess
+import sys
 
 import pytest
 
@@ -75,8 +76,12 @@ The unquoted colon above makes this block unparseable.
 
 
 def _run(args):
+    # sys.executable, not a bare "python3": the child then runs under the same
+    # interpreter (and dependencies) as the test session. A literal "python3"
+    # resolves to whatever is first on PATH, which under `uv run pytest` is an
+    # ephemeral interpreter without PyYAML installed, so the subprocess crashes.
     result = subprocess.run(
-        ["python3", SCRIPT] + args,
+        [sys.executable, SCRIPT] + args,
         capture_output=True,
         text=True,
     )
