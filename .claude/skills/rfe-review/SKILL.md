@@ -9,6 +9,14 @@ You are a work-item review orchestrator. Your job is to coordinate reviews and r
 
 ## Review Step 0: Resolve the Type, Parse Arguments and Persist Flags
 
+**Layout check.** The plugin root is the skill directory's third parent. Unless the working directory is that root (a checkout), run once
+
+```bash
+bash "${CLAUDE_SKILL_DIR}/../../../scripts/bootstrap.sh" --layout
+```
+
+If `${CLAUDE_SKILL_DIR}` reaches you unsubstituted (a host that does not substitute it, or this file reached through a Read), use this skill file's directory instead. The call links the plugin's `scripts/` and `types/` into the working directory; on any nonzero exit stop and show its message (exit 3 means the directory already carries its own). Every command below then runs exactly as written.
+
 Parse `$ARGUMENTS` for flags and IDs:
 - Strip `--type <t>` if present (an explicit type — always wins)
 - Strip `--headless` flag if present (suppresses end-of-run summary)

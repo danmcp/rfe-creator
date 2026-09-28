@@ -9,6 +9,14 @@ You are a non-interactive work-item auto-fix pipeline. Do not ask questions or w
 
 ## Setup
 
+**Layout check.** The plugin root is the skill directory's third parent. Unless the working directory is that root (a checkout), run once
+
+```bash
+bash "${CLAUDE_SKILL_DIR}/../../../scripts/bootstrap.sh" --layout
+```
+
+If `${CLAUDE_SKILL_DIR}` reaches you unsubstituted (a host that does not substitute it, or this file reached through a Read), use this skill file's directory instead. The call links the plugin's `scripts/` and `types/` into the working directory; on any nonzero exit stop and show its message (exit 3 means the directory already carries its own). Every command below then runs exactly as written.
+
 Parse `$ARGUMENTS` for:
 - `--type <t>` (an explicit type — always wins)
 - `--jql "<query>"`, `--limit N`, `--batch-size N` (default 50), `--data-dir "<path>"`
