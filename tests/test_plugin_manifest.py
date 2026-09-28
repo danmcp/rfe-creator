@@ -61,7 +61,8 @@ class TestManifests:
     def test_no_manifest_names_the_hooks_file(self, manifest):
         assert "hooks" not in _load(manifest), (
             f"{manifest.relative_to(REPO_ROOT)}: hooks/hooks.json is discovered by default on "
-            "both hosts; naming it would replace (Codex) or double (Claude Code) that discovery")
+            "both hosts; naming it would replace (Codex) or double (Claude Code) that discovery"
+        )
 
 
 class TestPluginHooks:
@@ -74,7 +75,8 @@ class TestPluginHooks:
             for expected, actual in zip(groups, plugin[event]):
                 assert actual.get("matcher") == expected.get("matcher"), event
                 assert [h["command"] for h in actual["hooks"]] == [
-                    _rooted(h["command"]) for h in expected["hooks"]], event
+                    _rooted(h["command"]) for h in expected["hooks"]
+                ], event
 
     def test_handlers_are_portable_shell_form(self):
         plugin = _load(PLUGIN_HOOKS)
@@ -84,7 +86,8 @@ class TestPluginHooks:
                 for handler in group["hooks"]:
                     assert handler["type"] == "command", event
                     assert '"${CLAUDE_PLUGIN_ROOT}/' in handler["command"], (
-                        "root the script at the (quoted) plugin directory")
+                        "root the script at the (quoted) plugin directory"
+                    )
                     assert isinstance(handler.get("timeout"), int) and handler["timeout"] > 0
                     stray = set(handler) & (CLAUDE_ONLY_HANDLER_KEYS | CODEX_ONLY_HANDLER_KEYS)
                     assert not stray, f"{event}: host-specific handler keys {sorted(stray)}"
@@ -108,16 +111,33 @@ class TestHookRuns:
             env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT)
             if gate:
                 env["RFE_CREATOR_ENABLE_CONTEXT_HOOK"] = "1"
-            return subprocess.run(["sh", "-c", command], cwd=tmp_path, env=env,
-                                  capture_output=True, text=True, timeout=60)
+            return subprocess.run(
+                ["sh", "-c", command],
+                cwd=tmp_path,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
 
         return _run
 
     @pytest.fixture
     def pipeline_state(self, tmp_path):
-        subprocess.run([sys.executable, str(REPO_ROOT / "scripts" / "pipeline_state.py"),
-                        "init", "--type", "rfe", "--headless"],
-                       cwd=tmp_path, check=True, capture_output=True, text=True)
+        subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "pipeline_state.py"),
+                "init",
+                "--type",
+                "rfe",
+                "--headless",
+            ],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
         assert (tmp_path / "tmp" / "pipeline-state.yaml").is_file()
 
     def test_prints_a_plain_text_banner_in_a_pipeline_directory(self, run_hook, pipeline_state):
