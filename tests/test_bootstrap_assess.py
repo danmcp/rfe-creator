@@ -417,6 +417,36 @@ class TestLayout:
         assert rc == 0, stderr
         assert "NOTE: could not write" in stdout and "/scripts" in stdout
 
+    def test_an_existing_tmp_directory_is_left_out_of_the_excludes(self, in_tmp):
+        """CodeRabbit on #205: a project that already uses tmp/ must not have its untracked
+        files hidden by a wholesale /tmp/ exclusion — the entry is skipped with a note, and
+        silently when git already ignores the directory."""
+        subprocess.run(["git", "init", "-q", str(in_tmp)], check=True)
+        os.makedirs(os.path.join(in_tmp, "tmp"))
+        with open(os.path.join(in_tmp, "tmp", "theirs.txt"), "w") as f:
+            f.write("project file\n")
+        result = self._layout()
+        assert result.returncode == 0, result.stderr
+        lines = self._exclude_lines(in_tmp)
+        assert "/scripts" in lines and "/types" in lines, lines
+        assert "/tmp/" not in lines, lines
+        assert "git: excluded /scripts /types in" in result.stdout, result.stdout
+        assert "NOTE: tmp/ already exists here" in result.stdout, result.stdout
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            cwd=in_tmp,
+            check=True,
+        ).stdout
+        assert "?? tmp/" in status, status
+        # the project's own ignore rule covers it: nothing to add, nothing to say
+        with open(os.path.join(in_tmp, ".gitignore"), "w") as f:
+            f.write("tmp/\n")
+        again = self._layout()
+        assert again.returncode == 0 and again.stdout == "", again
+        assert self._exclude_lines(in_tmp) == lines
+
     def test_exclude_entries_are_anchored_from_a_subdirectory(self, tmp_path):
         subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
         sub = tmp_path / "sub"
@@ -617,8 +647,13 @@ class TestCallersDeclareType:
             assert first_command and guard_at < first_command.start(), name
             assert "The plugin root is the skill directory's third parent." in text, name
             assert "reaches you unsubstituted" in text, name
-            assert "exit 3 means the directory already carries its own: stop" in text, name
-            assert "If `scripts/bootstrap.sh` is not in the working directory" in text, name
+            assert "on any nonzero exit stop and show its message" in text, name
+            assert "exit 3 means the directory already carries its own" in text, name
+            # The condition is the path identity, not a filename: a directory that carries
+            # its own scripts/bootstrap.sh still gets the plugin's refusal (CodeRabbit on
+            # #205), and the checkout, where the root is the cwd, still runs no extra command.
+            assert "Unless the working directory is that root (a checkout), run once" in text, name
+            assert "scripts/bootstrap.sh` is not in the working directory" not in text, name
 
     def test_no_committed_symlinks(self):
         """No symlink is committed anywhere in the repository except the CLAUDE.md alias that

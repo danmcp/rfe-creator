@@ -184,7 +184,16 @@ note_excludes() {
   prefix="$(git rev-parse --show-prefix 2>/dev/null)"
   for e in "$@"; do
     entry="/${prefix}${e#/}"
-    grep -qxF -- "$entry" "$exclude" 2>/dev/null || missing+=("$entry")
+    grep -qxF -- "$entry" "$exclude" 2>/dev/null && continue
+    # tmp/ is the one entry that may already be the project's own (scripts/ and types/
+    # were linked above; the vendored paths are written by this run): an existing one is
+    # left out rather than have its untracked files hidden - unless git already ignores it.
+    if [ "$e" = "/tmp/" ] && [ -e tmp ]; then
+      git check-ignore -q -- tmp 2>/dev/null \
+        || echo "NOTE: tmp/ already exists here and stays out of $exclude - the pipeline keeps its state under tmp/ (pipeline-*, <type>-assess/)"
+      continue
+    fi
+    missing+=("$entry")
   done
   [ ${#missing[@]} -eq 0 ] && return 0
   if { mkdir -p "$(dirname "$exclude")" \
