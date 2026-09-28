@@ -18,6 +18,8 @@ execution:
   arguments: ${gen.arguments}
   timeout: ${type.eval.timeout}          # ${fragment.execution.timeout_note}
   max_budget_usd: 100.0  # Per-invocation cost cap
+  env:
+    RFE_CREATOR_ENABLE_CONTEXT_HOOK: "1"  # the compaction-recovery hook (carried from .claude/settings.json) is opt-in
 
 # Runner — agent harness + runner-specific knobs
 runner:
