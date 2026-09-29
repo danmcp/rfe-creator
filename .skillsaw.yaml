@@ -9,6 +9,18 @@ rules:
   agentskill-name:
     enabled: false
 
+  # The repository is a .claude/ project that is also a plugin: the root
+  # .claude-plugin/plugin.json (skills under ./.claude/skills/, hooks/hooks.json) is the
+  # one manifest. skillsaw's single-plugin discovery also lists the .claude/ directory as
+  # a plugin and asks it for a manifest, name and README of its own, which it cannot have.
+  # plugin-json-valid still validates the root manifest.
+  plugin-json-required:
+    enabled: false
+  plugin-naming:
+    enabled: false
+  plugin-readme:
+    enabled: false
+
   context-budget:
     enabled: true
     severity: warning
