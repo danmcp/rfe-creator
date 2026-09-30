@@ -167,6 +167,85 @@ class TestInit:
         # Must NOT tell the LLM to run advance
         assert "advance" not in output
 
+    # ── Stop hook guard ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _stop_guard(monkeypatch, gate=True):
+        import io
+        import json
+        from contextlib import redirect_stderr, redirect_stdout
+
+        if gate:
+            monkeypatch.setenv("RFE_CREATOR_ENABLE_CONTEXT_HOOK", "1")
+        else:
+            monkeypatch.delenv("RFE_CREATOR_ENABLE_CONTEXT_HOOK", raising=False)
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            ps.cmd_stop_guard([])
+        decision = json.loads(out.getvalue()) if out.getvalue().strip() else None
+        return decision, err.getvalue()
+
+    def test_stop_guard_lets_a_session_without_a_pipeline_stop(self, tmp_dir, monkeypatch):
+        decision, err = self._stop_guard(monkeypatch)
+        assert decision is None and err == ""
+
+    def test_stop_guard_is_opt_in(self, tmp_dir, monkeypatch):
+        ps._save_state(make_state(phase="ASSESS"))
+        decision, _ = self._stop_guard(monkeypatch, gate=False)
+        assert decision is None
+
+    def test_stop_guard_lets_a_done_pipeline_stop(self, tmp_dir, monkeypatch):
+        ps._save_state(make_state(phase="DONE"))
+        decision, err = self._stop_guard(monkeypatch)
+        assert decision is None and err == ""
+
+    def test_stop_guard_blocks_mid_pipeline_with_recovery_banner(self, tmp_dir, monkeypatch):
+        """The 2026-09-29 shape: the orchestrator ends its turn at REVISE after a
+        compaction. The guard answers with a block whose reason is the banner."""
+        ps._save_state(make_state(phase="REVISE", batch=1, total_batches=1))
+        decision, _ = self._stop_guard(monkeypatch)
+        assert decision["decision"] == "block"
+        assert "phase REVISE, not DONE" in decision["reason"]
+        assert "[PIPELINE STATE RECOVERY] Current phase: REVISE" in decision["reason"]
+        assert "next-action" in decision["reason"]
+        assert "advance" not in decision["reason"]
+
+    def test_stop_guard_blocks_during_setup_too(self, tmp_dir, monkeypatch):
+        ps._save_state(make_state(phase="INIT"))
+        decision, _ = self._stop_guard(monkeypatch)
+        assert decision["decision"] == "block"
+        assert "Setup in progress" in decision["reason"]
+
+    def test_stop_guard_fails_open_on_an_unreadable_state(self, tmp_dir, monkeypatch):
+        os.makedirs("tmp", exist_ok=True)
+        with open(ps.STATE_FILE, "w") as f:
+            f.write("phase: [unterminated\n")
+        decision, _ = self._stop_guard(monkeypatch)
+        assert decision is None
+
+    def test_stop_guard_escape_hatch_opens_when_state_stops_changing(self, tmp_dir, monkeypatch):
+        """Same phase, batch, wave and mtime across STOP_GUARD_MAX_BLOCKS blocks: the
+        run is stuck, and holding the session until the job timeout helps no one."""
+        ps._save_state(make_state(phase="ASSESS", batch=1, total_batches=1))
+        for _ in range(ps.STOP_GUARD_MAX_BLOCKS):
+            decision, _ = self._stop_guard(monkeypatch)
+            assert decision["decision"] == "block"
+        decision, err = self._stop_guard(monkeypatch)
+        assert decision is None
+        assert "unchanged across" in err and "INCOMPLETE" in err
+
+    def test_stop_guard_counter_resets_when_pipeline_progresses(self, tmp_dir, monkeypatch):
+        ps._save_state(make_state(phase="ASSESS", batch=1, total_batches=1))
+        for _ in range(ps.STOP_GUARD_MAX_BLOCKS):
+            self._stop_guard(monkeypatch)
+        # progress: a new phase → a new fingerprint → blocks resume from one
+        ps._save_state(make_state(phase="REVIEW", batch=1, total_batches=1))
+        decision, _ = self._stop_guard(monkeypatch)
+        assert decision["decision"] == "block"
+        with open(ps.STOP_GUARD_FILE) as f:
+            fingerprint, count = f.read().split("\n", 1)
+        assert fingerprint.startswith("REVIEW|") and count.strip() == "1"
+
     def test_dispatch_context_handles_done(self, tmp_dir):
         """dispatch-context during DONE says pipeline complete, not 'run advance'."""
         ps._save_state(make_state(phase="DONE"))

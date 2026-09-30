@@ -1081,6 +1081,28 @@ the seam between subsystems.
 | G9 | Snapshot `processed=false` persists if auto-fix runs without submit | Re-processed on next run | Mitigated by `check_resume.py` for passing IDs |
 | G10 | Split attempt not recorded in revision history | Repeat split recommendations possible on future runs | Medium impact |
 
+### 6.3b Stop guard (premature end of turn)
+
+A pipeline run ends when the state file reaches `DONE`, not when the model ends a
+turn. On 2026-09-29 03:26 UTC the production orchestrator ended its turn at
+`REVISE` right after an auto-compaction (an empty tool call, `stop_reason=stop_sequence`);
+the CLI reported success, the job ran submit on the partial artifacts, and an
+unreviewed revision reached Jira. The `Stop` hook (`pipeline_state.py stop-guard`,
+declared in `.claude/settings.json` and shipped in the plugin's `hooks/hooks.json`,
+opt-in through `RFE_CREATOR_ENABLE_CONTEXT_HOOK`) closes that path:
+
+- no state file, phase `DONE`, gate unset, or any error → the stop is allowed (fails open);
+- otherwise → `{"decision": "block", "reason": <recovery banner>}`, and the model
+  continues the dispatch loop;
+- escape hatch: `STOP_GUARD_MAX_BLOCKS` (6) consecutive blocks with the same phase,
+  batch, wave and state-file mtime mean the run is not progressing; the stop is then
+  allowed with a `[PIPELINE STOP GUARD]` warning on stderr (below Claude Code's own cap
+  of 8 consecutive stop-hook continuations, so this message is the one that fires).
+  The counter (`tmp/pipeline-stop-guard.txt`) resets as soon as the state changes.
+
+The guard does not replace the job-level check that no submit runs without a `REPORT`
+phase; it makes that situation rare.
+
 ### 6.4 State Persistence File Inventory (Context Compression Resilience)
 
 Each skill uses distinct file prefixes to avoid collisions during nested calls.

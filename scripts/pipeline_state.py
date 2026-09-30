@@ -2295,6 +2295,96 @@ def cmd_post_compact_hook(args):
     cmd_dispatch_context(args)
 
 
+STOP_GUARD_FILE = "tmp/pipeline-stop-guard.txt"
+# Consecutive blocks tolerated while the state file does not change. Claude
+# Code caps consecutive stop-hook continuations at 8 on its own; staying below
+# that keeps the guard's own escape hatch the one that fires, with a message.
+STOP_GUARD_MAX_BLOCKS = 6
+
+
+def _stop_guard_fingerprint(state):
+    """What must change between two blocked stops for the pipeline to count as
+    progressing: the phase, the batch, the wave, and the state file's mtime."""
+    try:
+        mtime = int(os.stat(STATE_FILE).st_mtime)
+    except OSError:
+        mtime = 0
+    return f"{state.get('phase')}|{state.get('batch')}|{state.get('wave')}|{mtime}"
+
+
+def _stop_guard_count(fingerprint):
+    """Consecutive blocks seen for this fingerprint, after recording this one."""
+    count = 1
+    try:
+        with open(STOP_GUARD_FILE, encoding="utf-8") as f:
+            prev_fp, prev_count = f.read().split("\n", 1)
+        if prev_fp == fingerprint:
+            count = int(prev_count.strip() or 0) + 1
+    except (OSError, ValueError):
+        pass
+    try:
+        os.makedirs(os.path.dirname(STOP_GUARD_FILE), exist_ok=True)
+        with open(STOP_GUARD_FILE, "w", encoding="utf-8") as f:
+            f.write(f"{fingerprint}\n{count}\n")
+    except OSError:
+        pass
+    return count
+
+
+def cmd_stop_guard(args):
+    """Entry point for the Stop hook — keep the orchestrator in the dispatch loop.
+
+    A pipeline run ends when the state reaches DONE, not when the model ends a
+    turn: a text-only turn (or an empty tool call, as after the 2026-09-29
+    auto-compaction) would otherwise end the session mid-pipeline and hand a
+    partial run to the submit step. While `tmp/pipeline-state.yaml` exists and
+    its phase is not DONE, the guard answers the Stop with
+    ``{"decision": "block", "reason": <the recovery banner>}``, which Claude
+    Code shows to the model as the reason to continue.
+
+    Fails open: no state file, an unreadable one, the gate variable unset, or
+    any error lets the stop through. Escape hatch: when STOP_GUARD_MAX_BLOCKS
+    consecutive blocks see the same phase, batch, wave and state-file mtime,
+    the pipeline is not progressing and the stop is allowed with a warning, so
+    a stuck run cannot hold the session until the job timeout. The counter
+    resets as soon as the state changes.
+    """
+    if not os.environ.get("RFE_CREATOR_ENABLE_CONTEXT_HOOK"):
+        return
+    if not os.path.exists(STATE_FILE):
+        return
+    try:
+        state = _load_state()
+    except (SystemExit, Exception):  # noqa: BLE001 - a hook must fail open
+        return
+    if not isinstance(state, dict) or state.get("phase") == "DONE":
+        return
+    fingerprint = _stop_guard_fingerprint(state)
+    count = _stop_guard_count(fingerprint)
+    if count > STOP_GUARD_MAX_BLOCKS:
+        print(
+            f"[PIPELINE STOP GUARD] phase {state.get('phase')} unchanged across "
+            f"{count - 1} blocked stops; allowing the stop. The run is INCOMPLETE.",
+            file=sys.stderr,
+        )
+        return
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    try:
+        with redirect_stdout(buf):
+            cmd_dispatch_context([])
+    except (SystemExit, Exception):  # noqa: BLE001
+        return
+    reason = (
+        f"The auto-fix pipeline is at phase {state.get('phase')}, not DONE: the run is not "
+        "over, and ending the turn now would hand a partial run to the submit step. "
+        "Do not stop. Continue the dispatch loop now.\n\n" + buf.getvalue().rstrip()
+    )
+    print(json.dumps({"decision": "block", "reason": reason}))
+
+
 COMMANDS = {
     "init": cmd_init,
     "get-phase": cmd_get_phase,
@@ -2311,6 +2401,7 @@ COMMANDS = {
     "diagnose": cmd_diagnose,
     "dispatch-context": cmd_dispatch_context,
     "post-compact-hook": cmd_post_compact_hook,
+    "stop-guard": cmd_stop_guard,
 }
 
 if __name__ == "__main__":
