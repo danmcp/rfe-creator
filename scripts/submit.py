@@ -1330,6 +1330,68 @@ def main():
                     )
                     continue
 
+        # An interrupted revision (the 2026-09-29 03:12 UTC run): the body of an existing
+        # item changed but its review never recorded auto_revised. The revise agent sets
+        # that flag as its LAST action (AISDLC-50), so a changed body without it never
+        # reached REASSESS -- the pipeline stopped between the rewrite and the re-review.
+        # The automation (--auto-approve) must not publish an unreviewed rewrite: hold the
+        # description, flag the item for a human, and say why. An interactive submit keeps
+        # the update path: a human editing the task file before /rfe-submit is a manual
+        # revision and carries no flag either.
+        if (
+            args.auto_approve
+            and is_existing
+            and review_data
+            and not review_data.get("auto_revised", False)
+        ):
+            reason = (
+                "Revision interrupted: the task body changed but the review never recorded "
+                "auto_revised, so the rewrite was not re-reviewed. The description was left "
+                "as it was; re-run the pipeline on this item or review the local revision by hand."
+            )
+            review_path = _find_review(args.artifacts_dir, item_id, cfg)
+            if review_path:
+                try:
+                    update_frontmatter(
+                        review_path,
+                        {"needs_attention": True, "needs_attention_reason": reason},
+                        cfg["review_schema"],
+                    )
+                except Exception as e:
+                    print(
+                        f"  Warning: could not record the interrupted revision on {item_id}'s "
+                        f"review ({e}).",
+                        file=sys.stderr,
+                    )
+            review_data["needs_attention"] = True
+            review_data["needs_attention_reason"] = reason
+            plan.append(
+                {
+                    id_field: item_id,
+                    "title": title,
+                    "is_existing": is_existing,
+                    "priority": priority,
+                    "size": size,
+                    "action": "Label only",
+                    "labels": _build_labels(
+                        item_id, review_data, is_existing, rec, original_labels
+                    ),
+                    "remove_labels": [],
+                    "skip_reason": None,
+                    "note": "revision interrupted (auto_revised false): description not published",
+                    "task_path": task_path,
+                    "jira_key": jira_key,
+                    "attn_reason": reason,
+                    "original_labels": original_labels,
+                    "auto_approve": False,
+                    "jira_status": jira_status,
+                    # Not disposed of: the next scheduled run must pick the item up
+                    # again and redo the revision properly (fetch invariant 7).
+                    "leave_unprocessed": True,
+                }
+            )
+            continue
+
         labels = _build_labels(item_id, review_data, is_existing, rec, original_labels)
         feas_remove = []
         if review_data:
@@ -1376,6 +1438,8 @@ def main():
             print(f"{'':>16} Remove: {', '.join(entry['remove_labels'])}")
         if entry["skip_reason"]:
             print(f"{'':>16} Reason: {entry['skip_reason']}")
+        if entry.get("note"):
+            print(f"{'':>16} Note: {entry['note']}")
     print()
 
     approve_comment = (
@@ -1451,7 +1515,8 @@ def main():
                     server, user, token, entry, results, args.dry_run, cfg
                 )
                 _maybe_approve(item_id, jira_key, entry)
-                mark_processed_ids.append(item_id)
+                if not entry.get("leave_unprocessed"):
+                    mark_processed_ids.append(item_id)
                 continue
 
             # Read and clean artifact content

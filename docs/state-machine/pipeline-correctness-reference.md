@@ -1013,6 +1013,21 @@ could disagree with the submission pipeline's content comparison.
 
 ---
 
+### 5.12 Interrupted revisions at submit
+
+The revise agent sets `auto_revised: true` as its last action (AISDLC-50), so an existing
+item whose task body differs from its original while the review still says
+`auto_revised: false` is a revision the pipeline stopped between the rewrite and the
+re-review — the 2026-09-29 03:12 UTC shape, where the run ended right after an
+auto-compaction and the post-agent submit pushed the unreviewed text to RHAIRFE-3520.
+Under `--auto-approve` (the automation's mode) `submit.py` now holds such an item: the
+description is not updated, the review gets `needs_attention: true` with a reason that
+names the interruption, the plan entry runs as `Label only` (needs-attention label and
+comment, no approval), and the item is left **unprocessed** in the snapshot so the next
+scheduled run picks it up again and redoes the revision properly. An interactive submit
+(no `--auto-approve`) keeps the update path: a human who edits the task file before
+`/rfe-submit` is making a manual revision and carries no flag either.
+
 ## 6. Cross-References
 
 ### 6.1 Cross-Concern Stitching: Orchestration to Agent Internals

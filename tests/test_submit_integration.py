@@ -456,6 +456,103 @@ class TestFeasibilityLabelExecutor:
         assert "rfe-creator-feasibility-fail" not in issue["fields"]["labels"]
 
 
+class TestInterruptedRevisionHold:
+    """An existing item whose body changed while its review still says
+    ``auto_revised: false`` is an interrupted revision (the revise agent sets that flag
+    as its last action, AISDLC-50). Under --auto-approve the rewrite is held, not
+    published; an interactive submit keeps the update path."""
+
+    ORIGINAL = "## Problem\n\nOriginal content.\n"
+    REWRITE = "## Problem\n\nRewritten by the revise agent, never re-reviewed.\n"
+
+    @staticmethod
+    def _desc_text(issue):
+        desc = issue["fields"]["description"]
+        if isinstance(desc, dict):
+            texts = []
+            for node in desc.get("content", []):
+                for child in node.get("content", []):
+                    if child.get("type") == "text":
+                        texts.append(child["text"])
+            return "\n".join(texts)
+        return desc or ""
+
+    def _seed(self, art_dir, jira, auto_revised):
+        jira.create("RHAIRFE-1234", "Test RFE", self.ORIGINAL)
+        _write(f"{art_dir}/rfe-originals/RHAIRFE-1234.md", self.ORIGINAL)
+        _write(
+            f"{art_dir}/rfe-tasks/RHAIRFE-1234.md",
+            "---\nrfe_id: RHAIRFE-1234\ntitle: Test RFE\npriority: Major\nstatus: Ready\n"
+            f"---\n{self.REWRITE}",
+        )
+        _write(
+            f"{art_dir}/rfe-reviews/RHAIRFE-1234-review.md",
+            _review("RHAIRFE-1234", auto_revised=auto_revised),
+        )
+
+    def test_auto_approve_holds_an_interrupted_revision(self, art_dir, jira):
+        self._seed(art_dir, jira, auto_revised="false")
+
+        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        assert r.returncode == 0, r.stderr
+        assert "revision interrupted" in r.stdout
+        assert "RHAIRFE-1234: Updated" not in r.stdout
+        assert "Transitioned to Approved" not in r.stdout
+
+        issue = jira.get("RHAIRFE-1234")
+        assert "Original content." in self._desc_text(issue)
+        assert "Rewritten" not in self._desc_text(issue)
+        assert "rfe-creator-needs-attention" in issue["fields"]["labels"]
+        assert "rfe-creator-auto-revised" not in issue["fields"]["labels"]
+        comments = jira.request("GET", "/rest/api/3/issue/RHAIRFE-1234/comment")
+        assert comments["total"] >= 1
+        fm = _read_frontmatter(f"{art_dir}/rfe-reviews/RHAIRFE-1234-review.md")
+        assert fm["needs_attention"] is True
+        assert "Revision interrupted" in fm["needs_attention_reason"]
+
+    def test_held_item_stays_unprocessed_for_the_next_run(self, art_dir, jira):
+        """The hold is not a disposal: the next scheduled run must pick the item up
+        again and redo the revision properly, so the snapshot keeps processed: false."""
+        self._seed(art_dir, jira, auto_revised="false")
+        snap_dir = os.path.join(art_dir, "auto-fix-runs")
+        os.makedirs(snap_dir, exist_ok=True)
+        snap_path = os.path.join(snap_dir, "issue-snapshot-20260929-000000.yaml")
+        with open(snap_path, "w") as f:
+            yaml.dump(
+                {
+                    "query_timestamp": "2026-09-29T00:00:00Z",
+                    "timestamp": "2026-09-29T00:00:01Z",
+                    "issues": {"RHAIRFE-1234": {"processed": False, "hash": "abc"}},
+                },
+                f,
+            )
+
+        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        assert r.returncode == 0, r.stderr
+        with open(snap_path) as f:
+            snap = yaml.safe_load(f)
+        assert snap["issues"]["RHAIRFE-1234"]["processed"] is False
+
+    def test_interactive_submit_still_updates(self, art_dir, jira):
+        """No --auto-approve: a human editing the task file is a manual revision."""
+        self._seed(art_dir, jira, auto_revised="false")
+
+        r = _run_submit(art_dir, jira.url)
+        assert r.returncode == 0, r.stderr
+        assert "RHAIRFE-1234: Updated" in r.stdout
+        assert "Rewritten" in self._desc_text(jira.get("RHAIRFE-1234"))
+
+    def test_completed_revision_is_published_under_auto_approve(self, art_dir, jira):
+        self._seed(art_dir, jira, auto_revised="true")
+
+        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        assert r.returncode == 0, r.stderr
+        assert "RHAIRFE-1234: Updated" in r.stdout
+        issue = jira.get("RHAIRFE-1234")
+        assert "Rewritten" in self._desc_text(issue)
+        assert "rfe-creator-auto-revised" in issue["fields"]["labels"]
+
+
 class TestConflictDetection:
     def test_conflict_prevents_update(self, art_dir, jira):
         """Jira description differs from original → skip, no PUT."""
