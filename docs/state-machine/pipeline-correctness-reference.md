@@ -1094,11 +1094,19 @@ opt-in through `RFE_CREATOR_ENABLE_CONTEXT_HOOK`) closes that path:
 - no state file, phase `DONE`, gate unset, or any error → the stop is allowed (fails open);
 - otherwise → `{"decision": "block", "reason": <recovery banner>}`, and the model
   continues the dispatch loop;
-- escape hatch: `STOP_GUARD_MAX_BLOCKS` (6) consecutive blocks with the same phase,
-  batch, wave and state-file mtime mean the run is not progressing; the stop is then
-  allowed with a `[PIPELINE STOP GUARD]` warning on stderr (below Claude Code's own cap
-  of 8 consecutive stop-hook continuations, so this message is the one that fires).
-  The counter (`tmp/pipeline-stop-guard.txt`) resets as soon as the state changes.
+- escape hatch: `STOP_GUARD_MAX_BLOCKS` (6) consecutive blocks with the same progress
+  fingerprint mean the run is not progressing; the stop is then allowed with a
+  `[PIPELINE STOP GUARD]` warning on stderr (below Claude Code's own cap of 8 consecutive
+  stop-hook continuations, so this message is the one that fires). The fingerprint is the
+  phase, the batch, and the mtime and size of the state file **and of the wave files**
+  (`tmp/pipeline-wave-ids.txt`, `tmp/pipeline-wave-launch.txt`): `next-action` records a
+  new wave of the same phase in those without touching the state file, so waves
+  progressing inside one phase reset the counter too. The counter
+  (`tmp/pipeline-stop-guard.txt`) is read and written under a file lock, and a Stop event
+  seen by both registrations of the guard (the settings hook and the plugin's copy, in a
+  checkout that also has the plugin installed) is counted once: the record keeps a key of
+  the event JSON (`session_id`, `stop_hook_active`, `last_assistant_message`) and a
+  matching key reads the count back instead of incrementing it.
 
 The guard does not replace the job-level check that no submit runs without a `REPORT`
 phase; it makes that situation rare.

@@ -170,7 +170,7 @@ class TestInit:
     # ── Stop hook guard ──────────────────────────────────────────────────
 
     @staticmethod
-    def _stop_guard(monkeypatch, gate=True):
+    def _stop_guard(monkeypatch, gate=True, stdin=None):
         import io
         import json
         from contextlib import redirect_stderr, redirect_stdout
@@ -179,11 +179,19 @@ class TestInit:
             monkeypatch.setenv("RFE_CREATOR_ENABLE_CONTEXT_HOOK", "1")
         else:
             monkeypatch.delenv("RFE_CREATOR_ENABLE_CONTEXT_HOOK", raising=False)
+        # The hook's stdin: the Stop event JSON, or nothing (an empty payload
+        # yields no event key and every call counts).
+        monkeypatch.setattr(ps.sys, "stdin", io.StringIO(json.dumps(stdin) if stdin else ""))
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
             ps.cmd_stop_guard([])
         decision = json.loads(out.getvalue()) if out.getvalue().strip() else None
         return decision, err.getvalue()
+
+    @staticmethod
+    def _guard_count():
+        with open(ps.STOP_GUARD_FILE) as f:
+            return int(f.read().split("\n")[1])
 
     def test_stop_guard_lets_a_session_without_a_pipeline_stop(self, tmp_dir, monkeypatch):
         decision, err = self._stop_guard(monkeypatch)
@@ -245,6 +253,42 @@ class TestInit:
         with open(ps.STOP_GUARD_FILE) as f:
             fingerprint, count = f.read().split("\n", 1)
         assert fingerprint.startswith("REVIEW|") and count.strip() == "1"
+
+    def test_stop_guard_counter_resets_on_a_new_wave_of_the_same_phase(self, tmp_dir, monkeypatch):
+        """CodeRabbit on #209: next-action records a new wave in the wave files
+        without touching the state file, so waves progressing inside one phase
+        must reset the counter too."""
+        import time
+
+        ps._save_state(make_state(phase="ASSESS", batch=1, total_batches=1))
+        ps._write_ids(ps.WAVE_IDS_FILE, ["RHAIRFE-1", "RHAIRFE-2"])
+        for _ in range(ps.STOP_GUARD_MAX_BLOCKS):
+            self._stop_guard(monkeypatch)
+        # a new wave: different ids and a fresh launch record, same phase and state file
+        time.sleep(1.1)
+        ps._write_ids(ps.WAVE_IDS_FILE, ["RHAIRFE-3"])
+        with open(ps.WAVE_LAUNCH_FILE, "w") as f:
+            f.write("later\n")
+        decision, _ = self._stop_guard(monkeypatch)
+        assert decision["decision"] == "block"
+        assert self._guard_count() == 1
+
+    def test_stop_guard_counts_one_stop_event_once_across_two_registrations(
+        self, tmp_dir, monkeypatch
+    ):
+        """CodeRabbit on #209: with the plugin installed in a checkout both the
+        settings hook and the plugin hook run for the same Stop; they read the
+        same event JSON, so the second one must not increment the counter."""
+        ps._save_state(make_state(phase="ASSESS", batch=1, total_batches=1))
+        event = {"session_id": "s1", "stop_hook_active": False, "last_assistant_message": "done?"}
+        d1, _ = self._stop_guard(monkeypatch, stdin=event)
+        d2, _ = self._stop_guard(monkeypatch, stdin=event)
+        assert d1["decision"] == d2["decision"] == "block"
+        assert self._guard_count() == 1
+        # the next Stop is a new event and counts
+        event2 = {**event, "stop_hook_active": True, "last_assistant_message": "still?"}
+        self._stop_guard(monkeypatch, stdin=event2)
+        assert self._guard_count() == 2
 
     def test_dispatch_context_handles_done(self, tmp_dir):
         """dispatch-context during DONE says pipeline complete, not 'run advance'."""
