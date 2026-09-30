@@ -43,7 +43,7 @@ pre_script: rfe-creator/pre-rfe-creator.sh
 post_script: rfe-creator/post-rfe-creator.sh
 
 validation_loop:
-  preflight_check: 'python3 -c "import jsonschema"'
+  preflight_check: 'python3 -c "import jsonschema, yaml"'
   script: rfe-creator/validate-output-schema.sh
   schema: rfe-creator/result.schema.json
   max_iterations: 2

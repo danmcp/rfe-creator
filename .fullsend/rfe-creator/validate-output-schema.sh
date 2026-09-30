@@ -73,14 +73,8 @@ fi
 # READS files from the downloaded repo. Never cd into it or execute anything
 # from it: it is agent-writable, and this process runs on the host with the
 # runner env (JIRA_TOKEN) in scope.
-PIPELINE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pipeline",""))' "${RESULT_FILE}")
 STATE=""
 [[ -n "${TARGET_REPO_DIR:-}" ]] && STATE="${TARGET_REPO_DIR}/tmp/pipeline-state.yaml"
-
-case "${PIPELINE}" in
-  rfe-auto-fix|initiative-auto-fix) is_pipeline=1 ;;
-  *) is_pipeline=0 ;;
-esac
 
 [[ -n "${STATE}" && -f "${STATE}" ]] && is_pipeline=1
 if [[ "${is_pipeline}" == 0 ]]; then

@@ -4,7 +4,7 @@ display_name: Jira
 description: Jira
 category: data
 endpoints:
-  - host: "*.atlassian.net"
+  - host: "redhat.atlassian.net"
     port: 443
     protocol: rest
     enforcement: enforce
