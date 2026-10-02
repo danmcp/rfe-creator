@@ -1,0 +1,16 @@
+---
+id: jira
+display_name: Jira
+description: Jira
+category: data
+endpoints:
+  - host: "redhat.atlassian.net"
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    access: read-only
+binaries:
+  - path: "**/python"
+  - path: "**/python*"
+  - path: "**/python3"
+  - path: "**/curl"
