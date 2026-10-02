@@ -2310,7 +2310,10 @@ def _file_signature(path):
     """mtime and size of a bookkeeping file, or 0|0 when it does not exist."""
     try:
         st = os.stat(path)
-        return f"{int(st.st_mtime)}|{st.st_size}"
+        # Nanosecond mtime: two waves of the same phase launched within one second
+        # rewrite the wave files with the same size, and an integer-second signature
+        # would read that as no progress (CodeRabbit on #209).
+        return f"{st.st_mtime_ns}|{st.st_size}"
     except OSError:
         return "0|0"
 
