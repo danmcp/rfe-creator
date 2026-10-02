@@ -1045,11 +1045,20 @@ again instead of skipping it as submitted), and the item is left **unprocessed**
 snapshot. The retry needs one more thing: `snapshot_fetch.diff_snapshots` selects an
 unprocessed id whose Jira content did not change as *new*, not *changed*, and
 `check_resume` skips a new id whose local review (restored from the results repository)
-still says `pass: true` with no `error`. The hold therefore also writes `pass: false` on
-the review, next to the reason, so the next run re-fetches the issue, re-reviews it and
-redoes the revision properly instead of holding it again. The run report counts the held
-item as failed, which is what it is until that run. Under `--dry-run` the hold is reported
-and nothing is written. An interactive
+still says `pass: true` with no `error`. The hold therefore also writes `pass: false` and
+`error: revision_interrupted: …` on the review, next to the reason, so the next run
+re-fetches the issue, re-reviews it and redoes the revision properly instead of holding it
+again. The run report maps that error prefix to `blocked_reason` and counts the item as
+blocked, which is what `bootstrap_snapshot` reads as not processed, so a snapshot rebuilt
+from the reports agrees with the live one (RHAIFIRST-571). The hold needs evidence of a
+rewrite: an original on disk that differs from the task body; without an original the
+item takes the update path as before. A submit re-run over already-held artifacts (the
+manual submit jobs) holds again idempotently, re-applying the labels without a second
+comment, and the comment is posted even when the item already carried the needs-attention
+label at fetch. Under `--dry-run` the hold is reported and nothing is written. Known
+limit: the hold keys on `auto_revised`, which `REASSESS_RESTORE` restores to `true` before
+`REASSESS_REVISE`, so a run that dies inside a *second* revision pass is not detected; the
+durable fix is a per-wave revision marker set by the pipeline (follow-up). An interactive
 submit (no `--auto-approve`) keeps the update path: a human who edits the task file
 before `/rfe-submit` is making a manual revision and carries no flag either.
 

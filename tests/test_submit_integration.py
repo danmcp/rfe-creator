@@ -477,9 +477,10 @@ class TestInterruptedRevisionHold:
             return "\n".join(texts)
         return desc or ""
 
-    def _seed(self, art_dir, jira, auto_revised, original_labels=()):
+    def _seed(self, art_dir, jira, auto_revised, original_labels=(), with_original=True):
         jira.create("RHAIRFE-1234", "Test RFE", self.ORIGINAL)
-        _write(f"{art_dir}/rfe-originals/RHAIRFE-1234.md", self.ORIGINAL)
+        if with_original:
+            _write(f"{art_dir}/rfe-originals/RHAIRFE-1234.md", self.ORIGINAL)
         # original_labels is what FETCH recorded from Jira; the plan reads it from the task.
         labels_fm = (
             "original_labels:\n" + "".join(f"- {label}\n" for label in original_labels)
@@ -496,10 +497,19 @@ class TestInterruptedRevisionHold:
             _review("RHAIRFE-1234", auto_revised=auto_revised),
         )
 
+    @staticmethod
+    def _attention_comments(jira):
+        comments = jira.request("GET", "/rest/api/3/issue/RHAIRFE-1234/comment")["comments"]
+        return [c for c in comments if "Revision interrupted" in json.dumps(c["body"])]
+
     def test_auto_approve_holds_an_interrupted_revision(self, art_dir, jira):
         self._seed(art_dir, jira, auto_revised="false")
 
-        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        r = _run_submit(
+            art_dir,
+            jira.url,
+            ["--auto-approve", "--generate-report", "--report-timestamp", "20261002-190000"],
+        )
         assert r.returncode == 0, r.stderr
         assert "revision interrupted" in r.stdout
         assert "RHAIRFE-1234: Updated" not in r.stdout
@@ -516,6 +526,53 @@ class TestInterruptedRevisionHold:
         assert fm["needs_attention"] is True
         assert "Revision interrupted" in fm["needs_attention_reason"]
         assert fm["pass"] is False
+        assert fm["error"].startswith("revision_interrupted:")
+        # The run report shows the hold as blocked (not disposed of), which is what
+        # bootstrap_snapshot reads as unprocessed, like the live snapshot says.
+        with open(f"{art_dir}/auto-fix-runs/20261002-190000.yaml") as fh:
+            report = yaml.safe_load(fh)
+        (entry,) = [e for e in report["per_rfe"] if e["id"] == "RHAIRFE-1234"]
+        assert "Revision interrupted" in entry["blocked_reason"]
+        assert report["results"]["blocked"] == 1
+
+    def test_hold_needs_evidence_of_a_rewrite(self, art_dir, jira):
+        """Without an original on disk nothing shows the body changed: the item takes
+        the update path as before instead of being held on a guess."""
+        self._seed(art_dir, jira, auto_revised="false", with_original=False)
+        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        assert r.returncode == 0, r.stderr
+        assert "revision interrupted" not in r.stdout
+        assert "RHAIRFE-1234: Updated" in r.stdout
+
+    def test_rerun_over_held_artifacts_holds_again_without_a_second_comment(self, art_dir, jira):
+        """The manual submit jobs re-run submit over the same artifacts: the hold is
+        idempotent, the labels are re-applied, the comment is posted once."""
+        self._seed(art_dir, jira, auto_revised="false")
+        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        assert r.returncode == 0, r.stderr
+        assert len(self._attention_comments(jira)) == 1
+        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        assert r.returncode == 0, r.stderr
+        assert "revision interrupted" in r.stdout
+        assert len(self._attention_comments(jira)) == 1
+        issue = jira.get("RHAIRFE-1234")
+        assert "rfe-creator-needs-attention" in issue["fields"]["labels"]
+        assert "Original content." in self._desc_text(issue)
+
+    def test_hold_comment_is_posted_even_when_already_flagged(self, art_dir, jira):
+        """An item that already carried the needs-attention label at fetch still gets
+        the hold's comment: that nothing was published is new information."""
+        self._seed(
+            art_dir, jira, auto_revised="false", original_labels=("rfe-creator-needs-attention",)
+        )
+        jira.request(
+            "PUT",
+            "/rest/api/3/issue/RHAIRFE-1234",
+            {"fields": {"labels": ["rfe-creator-needs-attention"]}},
+        )
+        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        assert r.returncode == 0, r.stderr
+        assert len(self._attention_comments(jira)) == 1
 
     def test_held_item_is_processed_again_by_the_next_run(self, art_dir, jira):
         """CodeRabbit on #210: an unprocessed id with unchanged Jira content is selected

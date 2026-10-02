@@ -53,7 +53,11 @@ from artifact_utils import (  # noqa: E402
     scan_tasks,
     update_frontmatter,
 )
-from generate_run_report import SPLIT_NOT_ATTEMPTED_PREFIX, _parse_run_id  # noqa: E402
+from generate_run_report import (  # noqa: E402
+    REVISION_INTERRUPTED_PREFIX,
+    SPLIT_NOT_ATTEMPTED_PREFIX,
+    _parse_run_id,
+)
 from generate_run_report import TYPE_CONFIG as REPORT_TYPE_CONFIG  # noqa: E402
 from jira_utils import (  # noqa: E402
     add_comment,
@@ -567,7 +571,7 @@ def _post_needs_attention_comment(server, user, token, entry, results, dry_run, 
 
     original_labels = entry.get("original_labels") or []
     needs_attn_label = f"{cfg['label_prefix']}-needs-attention"
-    if needs_attn_label in original_labels:
+    if needs_attn_label in original_labels and not entry.get("attn_force"):
         return
 
     item_id = entry[cfg["id_field"]]
@@ -1292,6 +1296,7 @@ def main():
                 continue
 
         # For existing items, check if content has changed
+        body_changed = False  # evidence of a rewrite: an original on disk that differs
         if is_existing:
             original_path = os.path.join(args.artifacts_dir, cfg["originals_dir"], f"{item_id}.md")
             if os.path.exists(original_path):
@@ -1299,7 +1304,8 @@ def main():
                     original_body = strip_metadata(f.read())
                 with open(task_path, encoding="utf-8") as f:
                     current_body = strip_metadata(f.read())
-                if original_body.strip() == current_body.strip():
+                body_changed = original_body.strip() != current_body.strip()
+                if not body_changed:
                     no_change_labels = _build_labels(
                         item_id, review_data, is_existing, rec, original_labels
                     )
@@ -1344,9 +1350,16 @@ def main():
         if (
             args.auto_approve
             and is_existing
+            and body_changed
             and review_data
             and not review_data.get("auto_revised", False)
         ):
+            # A submit re-run over artifacts a previous submit already held (the manual
+            # submit jobs) holds again, idempotently: the labels are re-applied, the review
+            # is left as recorded and the comment is not posted a second time.
+            already_held = str(review_data.get("error") or "").startswith(
+                REVISION_INTERRUPTED_PREFIX
+            )
             reason = (
                 "Revision interrupted: the task body changed but the review never recorded "
                 "auto_revised, so the rewrite was not re-reviewed. The description was left "
@@ -1359,12 +1372,16 @@ def main():
             # change is selected as *new*, and check_resume skips a new id whose local
             # review (restored from the results repository) still passes with no error.
             # The review's pass was given on the body before the rewrite anyway.
-            if review_path and not args.dry_run:
+            if review_path and not args.dry_run and not already_held:
                 try:
                     update_frontmatter(
                         review_path,
                         {
                             "pass": False,
+                            # The run report maps this prefix to blocked_reason, which
+                            # bootstrap_snapshot reads as not processed, as the live
+                            # snapshot says (RHAIFIRST-571).
+                            "error": f"{REVISION_INTERRUPTED_PREFIX} auto_revised never recorded",
                             "needs_attention": True,
                             "needs_attention_reason": reason,
                         },
@@ -1414,7 +1431,10 @@ def main():
                     "note": "revision interrupted (auto_revised false): description not published",
                     "task_path": task_path,
                     "jira_key": jira_key,
-                    "attn_reason": reason,
+                    # Posted once per hold, and also when the item already carried the
+                    # needs-attention label at fetch: the reason (nothing published) is new.
+                    "attn_reason": None if already_held else reason,
+                    "attn_force": not already_held,
                     "original_labels": original_labels,
                     "auto_approve": False,
                     "jira_status": jira_status,
