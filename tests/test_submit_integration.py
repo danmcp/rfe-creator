@@ -525,6 +525,7 @@ class TestInterruptedRevisionHold:
         self._seed(art_dir, jira, auto_revised="false")
         r = _run_submit(art_dir, jira.url, ["--auto-approve"])
         assert r.returncode == 0, r.stderr
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
         import check_resume
 
         process_ids, skip_ids = check_resume.check_resume(["RHAIRFE-1234"], [], art_dir)
