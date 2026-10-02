@@ -28,6 +28,7 @@ allowed_remote_resources:
 ```
 
 From a checkout of this repository, run it directly with
-`fullsend run rfe-creator --fullsend-dir .fullsend --target-repo .`; the
+`fullsend run rfe-creator --fullsend-dir .fullsend --target-repo . --env-file .env`;
+the
 [rfe-creator agent README](./rfe-creator/README.md) lists the prerequisites and
 environment variables.
