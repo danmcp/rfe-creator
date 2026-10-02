@@ -155,6 +155,7 @@ exclusion, and split parent detection. The `rfe_id` pattern constraint causes
 | `SS_DISCOVER` | `discover_state()` scans Jira for recovery markers (idempotent); fallback: link-based recovery if no confirmation comment | `split_submit.py:90-148` |
 | `SS_PHASE1_PERSIST` | Post archival comments on parent with child content; Phase 2 refuses if incomplete | `split_submit.py:153-174` |
 | `SS_PHASE2_CREATE_LINK` | Create child Jira tickets + "Work item split" links + post confirmation | `split_submit.py:176-262` |
+| `SS_PHASE2_APPROVE` | Under `--auto-approve` (forwarded by `submit.py`): each created or recovered child whose review is a feasible rubric pass (`artifact_utils.auto_approve_qualifies`, the gate `submit.py` applies to every item) is transitioned to the type's approved status with the standard approval comment; an already-approved child is skipped | `split_submit.py` `_approve_child` |
 | `SS_PHASE3_CLOSE` | Label parent with split-original, transition to Closed (resolution: Obsolete); skips gracefully if no Closed transition | `split_submit.py:295-347` |
 | `SS_RENAME` | Post-submit: rename RFE-NNN.md -> RHAIRFE-NNNN.md, update frontmatter | `split_submit.py:507-518` |
 
@@ -920,6 +921,19 @@ a stable marker (e.g., a label on the child) written immediately after
 `create_issue()` and before `create_issue_link()`, so that `discover_state()`
 can match orphans by marker on subsequent runs.  See
 `TestSplitRecoveryGap` in `tests/test_submit_integration.py`.
+
+**Child approval (RHAIFIRST-82).** Children used to be created in `New`
+with their rubric-pass and feasibility-pass labels and never transitioned:
+the rubric-pass label excludes them from every later run's selection, so
+nothing revisited them (183 such RFEs on 2026-10-02). Under `--auto-approve`,
+which `submit.py` forwards and the interactive skills never pass, Phase 2
+approves each child that passes the same gate as every other item
+(`artifact_utils.auto_approve_qualifies`) right after its confirmation
+comment, with the comment `jira_utils.approval_comment` builds for
+`submit.py` too. The approval is checked again for a child the recovery
+adopts, so a death between creation and approval is completed by the next
+run without a second comment. See `TestAutoApproveChildren` in
+`tests/test_split_submit_integration.py`.
 
 ### 5.6 Speedrun `--headless` and Double-Announce
 

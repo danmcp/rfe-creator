@@ -281,6 +281,18 @@ def transition_issue(server, user, token, issue_key, target_status):
     return True
 
 
+def approval_comment(comment_prefix, type_label, approved_status):
+    """The auto-approve comment, word for word, wherever the pipeline transitions a ticket
+    (submit.py for new and existing items, split_submit.py for children at creation)."""
+    return (
+        f"*{comment_prefix}* This {type_label} has been automatically "
+        f"transitioned to {approved_status} status based on passing rubric scoring and "
+        "technical feasibility checks. Approval does not constitute a commitment "
+        "to customers until this item is prioritized into a product release "
+        "by product management."
+    )
+
+
 # ─── ADF Helpers ──────────────────────────────────────────────────────────────
 
 
