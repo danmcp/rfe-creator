@@ -1620,6 +1620,78 @@ class TestSplitChildSnapshot:
 
 
 class TestApprovedTransition:
+    SPLIT_PARENT_TASK = (
+        "---\nrfe_id: RHAIRFE-1000\ntitle: Parent RFE\n"
+        "priority: Major\nstatus: Archived\n---\n\nParent content.\n"
+    )
+    SPLIT_CHILD_TASK = (
+        "---\nrfe_id: RFE-{num:03d}\ntitle: Child RFE {num}\n"
+        "priority: Major\nstatus: Ready\n"
+        "parent_key: RHAIRFE-1000\n---\n\nChild {num} content.\n"
+    )
+
+    def test_split_children_transition_to_approved(self, art_dir, jira):
+        """--auto-approve reaches split_submit.py: a child whose review is a feasible
+        rubric pass is Approved at creation with the standard comment; one with an
+        indeterminate verdict is created and left alone (RHAIFIRST-82)."""
+        jira.create("RHAIRFE-1000", "Parent RFE", "Parent content.")
+        _write(f"{art_dir}/rfe-originals/RHAIRFE-1000.md", "Parent content.")
+        _write(f"{art_dir}/rfe-tasks/RHAIRFE-1000.md", self.SPLIT_PARENT_TASK)
+        for num in (1, 2):
+            _write(f"{art_dir}/rfe-tasks/RFE-{num:03d}.md", self.SPLIT_CHILD_TASK.format(num=num))
+        _write(f"{art_dir}/rfe-reviews/RFE-001-review.md", _review("RFE-001"))
+        _write(
+            f"{art_dir}/rfe-reviews/RFE-002-review.md",
+            _review("RFE-002").replace("feasibility: feasible", "feasibility: indeterminate"),
+        )
+
+        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        assert r.returncode == 0, r.stderr + r.stdout
+
+        by_title = {
+            i["fields"]["summary"]: i
+            for i in jira.search("project = RHAIRFE", fields="key,summary")
+            if i["key"] != "RHAIRFE-1000"
+        }
+        approved = by_title["Child RFE 1"]
+        left = by_title["Child RFE 2"]
+        assert jira.get(approved["key"])["fields"]["status"]["name"] == "Approved"
+        assert jira.get(left["key"])["fields"]["status"]["name"] != "Approved"
+        assert f"Transitioned {approved['key']} to Approved" in r.stdout
+        comments = jira.request("GET", f"/rest/api/3/issue/{approved['key']}/comment")
+        bodies = [json.dumps(c["body"]) for c in comments["comments"]]
+        assert sum("automatically transitioned to Approved" in b for b in bodies) == 1
+        comments = jira.request("GET", f"/rest/api/3/issue/{left['key']}/comment")
+        assert not any(
+            "automatically transitioned to Approved" in json.dumps(c["body"])
+            for c in comments["comments"]
+        )
+
+    def test_auto_approve_is_forwarded_to_split_submit(self, art_dir, jira, tmp_path, monkeypatch):
+        """The flag reaches the split subprocess only when submit.py runs with it."""
+        log = tmp_path / "argv.log"
+        stub = tmp_path / "stub_split_submit.py"
+        stub.write_text(
+            "import sys\n"
+            f"open({str(log)!r}, 'a').write(' '.join(sys.argv[1:]) + chr(10))\n"
+            "sys.exit(0)\n"
+        )
+        monkeypatch.setenv("RFE_SPLIT_SUBMIT_SCRIPT", str(stub))
+        jira.create("RHAIRFE-1000", "Parent RFE", "Parent content.")
+        _write(f"{art_dir}/rfe-originals/RHAIRFE-1000.md", "Parent content.")
+        _write(f"{art_dir}/rfe-tasks/RHAIRFE-1000.md", self.SPLIT_PARENT_TASK)
+        _write(f"{art_dir}/rfe-tasks/RFE-001.md", self.SPLIT_CHILD_TASK.format(num=1))
+        _write(f"{art_dir}/rfe-reviews/RFE-001-review.md", _review("RFE-001"))
+
+        r = _run_submit(art_dir, jira.url)
+        assert r.returncode == 0, r.stderr + r.stdout
+        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        assert r.returncode == 0, r.stderr + r.stdout
+        lines = log.read_text().splitlines()
+        assert len(lines) == 2
+        assert "--auto-approve" not in lines[0]
+        assert "--auto-approve" in lines[1]
+
     def test_existing_rfe_transitions_to_approved(self, art_dir, jira):
         """--auto-approve + passing review → existing RFE moved to Approved."""
         body = "Original."

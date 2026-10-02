@@ -43,6 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import type_registry  # noqa: E402
 from artifact_utils import (  # noqa: E402
     ValidationError,
+    auto_approve_qualifies,
     find_removed_context_yaml,
     read_frontmatter,
     read_frontmatter_validated,
@@ -57,6 +58,7 @@ from generate_run_report import TYPE_CONFIG as REPORT_TYPE_CONFIG  # noqa: E402
 from jira_utils import (  # noqa: E402
     add_comment,
     add_labels,
+    approval_comment,
     check_description_conflict,
     create_issue,
     get_issue,
@@ -820,6 +822,11 @@ def main():
                 cmd.extend(["--type", cfg["split_type_arg"]])
             if args.dry_run:
                 cmd.append("--dry-run")
+            if args.auto_approve:
+                # Children are approved at creation under the same gate as every other
+                # item (RHAIFIRST-82): their rubric-pass label excludes them from every
+                # later run, so nothing else would ever transition them.
+                cmd.append("--auto-approve")
             print(f"--- {parent_key} ---")
             # D3, one line per run: this process resolved the type (and printed the line for
             # an explicit --type); the child skips its own line when the marker is set.
@@ -1164,19 +1171,15 @@ def main():
             issue = get_issue(server, user, token, jira_key, fields=list(BINDING_WITNESS_FIELDS))
             return issue.get("fields") or {}
 
-        # Both types gate on the same rule: only an explicitly feasible item
+        # Both types gate on the same rule, shared with split_submit.py's child approval
+        # (artifact_utils.auto_approve_qualifies): only an explicitly feasible item
         # auto-approves. An `indeterminate` verdict means the assessment was
         # inconclusive, which is not a basis for transitioning a ticket to
         # Approved on its own. `needs_attention` is advisory here — it drives
         # the needs-attention label, not the transition. A review carrying an
         # `error` has no verdict at all (see _feasibility_verdict), whatever
         # its `pass` and `feasibility` fields say.
-        auto_approve = bool(
-            review_data
-            and not review_data.get("error")
-            and review_data.get("pass", False)
-            and review_data.get("feasibility") == "feasible"
-        )
+        auto_approve = auto_approve_qualifies(review_data)
 
         # Skip rejected items
         if rec in ("reject", "autorevise_reject"):
@@ -1442,13 +1445,7 @@ def main():
             print(f"{'':>16} Note: {entry['note']}")
     print()
 
-    approve_comment = (
-        f"*{cfg['comment_prefix']}* This {type_label} has been automatically "
-        f"transitioned to {approved_status} status based on passing rubric scoring and "
-        "technical feasibility checks. Approval does not constitute a commitment "
-        "to customers until this item is prioritized into a product release "
-        "by product management."
-    )
+    approve_comment = approval_comment(cfg["comment_prefix"], type_label, approved_status)
 
     def _maybe_approve(item_id, jira_key, entry):
         if not args.auto_approve or not entry.get("auto_approve"):

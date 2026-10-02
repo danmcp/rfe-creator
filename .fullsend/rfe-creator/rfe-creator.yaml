@@ -1,0 +1,75 @@
+---
+agent: rfe-creator/prompt.md
+model: claude-opus-4-6
+effort: high
+image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:259605fea321353552fdefd3a6a55e8b5c260998dfc5a622ed143e41a429995a
+policy: https://raw.githubusercontent.com/fullsend-ai/agents/11dd3ad15ab5033fd04661d7faf6f7af45548d2f/policies/base.yaml#sha256=3ed634401d87a1327fffe5e266272d930321484ce8a91dfa5fe447d4f2e00470
+role: rfe-creator
+slug: fullsend-ai-rfe-creator
+
+host_files:
+  - src: rfe-creator/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
+    expand: true
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+
+# Not needed when running from the rfe-creator repository
+# skills:
+#   - skills/architecture-review
+#   - skills/assess-rfe
+#   - skills/export-rubric
+#   - skills/feasibility-review
+#   - skills/initiative-auto-fix
+#   - skills/initiative-create
+#   - skills/initiative-feasibility-review
+#   - skills/initiative-review
+#   - skills/initiative-speedrun
+#   - skills/initiative-split
+#   - skills/initiative-submit
+#   - skills/rfe.auto-fix
+#   - skills/rfe.create
+#   - skills/rfe-creator.update-deps
+#   - skills/rfe-feasibility-review
+#   - skills/rfe.review
+#   - skills/rfe.speedrun
+#   - skills/rfe.split
+#   - skills/rfe.submit
+#   - skills/scope-review
+#   - skills/strategic-alignment-review
+#   - skills/testability-review
+
+pre_script: rfe-creator/pre-rfe-creator.sh
+post_script: rfe-creator/post-rfe-creator.sh
+
+validation_loop:
+  preflight_check: 'python3 -c "import jsonschema, yaml"'
+  script: rfe-creator/validate-output-schema.sh
+  schema: rfe-creator/result.schema.json
+  max_iterations: 2
+  feedback_mode: append
+
+timeout_minutes: 120
+
+env:
+  sandbox:
+    FULLSEND_TASK: "${FULLSEND_TASK}"
+    JIRA_SERVER: "${JIRA_SERVER}"
+    JIRA_USER: "${JIRA_USER}"
+    # Set CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS to at least the wave size
+    CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: 20
+    RFE_CREATOR_ENABLE_CONTEXT_HOOK: "1"
+    RFE_SKIP_BOOTSTRAP: "1"
+    CLAUDE_CODE_SUBAGENT_MODEL: claude-opus-4-6
+  runner:
+    JIRA_SERVER: ${JIRA_SERVER}
+    JIRA_USER: ${JIRA_USER}
+    JIRA_TOKEN: ${JIRA_TOKEN}
+
+openshell:
+  profiles:
+    - rfe-creator/jira-profile.yaml
+    - https://raw.githubusercontent.com/fullsend-ai/agents/11dd3ad15ab5033fd04661d7faf6f7af45548d2f/profiles/fullsend-vertex-ai.yaml#sha256=71ea4699ec497d4b9592220adf7588019eb8445dbc77af8e0e6767e68dcb5585
+providers:
+  - rfe-creator/jira-provider.yaml
+  - https://raw.githubusercontent.com/fullsend-ai/agents/11dd3ad15ab5033fd04661d7faf6f7af45548d2f/providers/vertex-ai.yaml#sha256=ae5ebe527e5d7b0fa6994346fde3f6ba11b632a3ba78ece96591b5ed85083ec1

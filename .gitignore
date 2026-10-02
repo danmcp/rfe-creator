@@ -42,3 +42,6 @@ eval/runs/
 
 # Logs
 *.log
+
+# Fullsend
+.fullsend-cache/
