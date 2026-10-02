@@ -515,6 +515,20 @@ class TestInterruptedRevisionHold:
         fm = _read_frontmatter(f"{art_dir}/rfe-reviews/RHAIRFE-1234-review.md")
         assert fm["needs_attention"] is True
         assert "Revision interrupted" in fm["needs_attention_reason"]
+        assert fm["pass"] is False
+
+    def test_held_item_is_processed_again_by_the_next_run(self, art_dir, jira):
+        """CodeRabbit on #210: an unprocessed id with unchanged Jira content is selected
+        as *new*, and check_resume skips a new id whose restored local review still
+        passes with no error; the hold therefore persists pass: false, so the next run
+        re-fetches and re-reviews the item instead of holding it forever."""
+        self._seed(art_dir, jira, auto_revised="false")
+        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        assert r.returncode == 0, r.stderr
+        import check_resume
+
+        process_ids, skip_ids = check_resume.check_resume(["RHAIRFE-1234"], [], art_dir)
+        assert process_ids == ["RHAIRFE-1234"] and skip_ids == []
 
     def test_dry_run_hold_writes_nothing(self, art_dir, jira):
         """CodeRabbit on #210: the planning path runs under --dry-run too, so the hold
@@ -525,6 +539,7 @@ class TestInterruptedRevisionHold:
         assert "revision interrupted" in r.stdout
         fm = _read_frontmatter(f"{art_dir}/rfe-reviews/RHAIRFE-1234-review.md")
         assert fm["needs_attention"] is False
+        assert fm["pass"] is True
         assert "needs_attention_reason" not in fm
         assert _read_frontmatter(f"{art_dir}/rfe-tasks/RHAIRFE-1234.md")["status"] == "Ready"
         issue = jira.get("RHAIRFE-1234")

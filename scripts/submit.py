@@ -1354,12 +1354,20 @@ def main():
             )
             review_path = _find_review(args.artifacts_dir, item_id, cfg)
             # The planning path runs under --dry-run too: record the hold on the review
-            # only when the run is real (CodeRabbit on #210).
+            # only when the run is real (CodeRabbit on #210). `pass: false` is what makes
+            # the next run redo the item: an unprocessed id whose Jira content did not
+            # change is selected as *new*, and check_resume skips a new id whose local
+            # review (restored from the results repository) still passes with no error.
+            # The review's pass was given on the body before the rewrite anyway.
             if review_path and not args.dry_run:
                 try:
                     update_frontmatter(
                         review_path,
-                        {"needs_attention": True, "needs_attention_reason": reason},
+                        {
+                            "pass": False,
+                            "needs_attention": True,
+                            "needs_attention_reason": reason,
+                        },
                         cfg["review_schema"],
                     )
                 except Exception as e:
@@ -1368,6 +1376,7 @@ def main():
                         f"review ({e}).",
                         file=sys.stderr,
                     )
+            review_data["pass"] = False
             review_data["needs_attention"] = True
             review_data["needs_attention_reason"] = reason
             # The review's verdicts were given on the body before the rewrite, so they

@@ -1042,10 +1042,14 @@ verdict labels removed because the review's verdicts were given on the body befo
 rewrite), the task keeps
 its status (nothing was published, so a re-run of submit on the same artifacts holds it
 again instead of skipping it as submitted), and the item is left **unprocessed** in the
-snapshot. That is what makes the retry: `snapshot_fetch.diff_snapshots` selects an
-unprocessed id as new, `check_resume` does not skip a selected id on its stale local
-review, and the next run re-fetches the issue, re-reviews it and redoes the revision
-properly. Under `--dry-run` the hold is reported and nothing is written. An interactive
+snapshot. The retry needs one more thing: `snapshot_fetch.diff_snapshots` selects an
+unprocessed id whose Jira content did not change as *new*, not *changed*, and
+`check_resume` skips a new id whose local review (restored from the results repository)
+still says `pass: true` with no `error`. The hold therefore also writes `pass: false` on
+the review, next to the reason, so the next run re-fetches the issue, re-reviews it and
+redoes the revision properly instead of holding it again. The run report counts the held
+item as failed, which is what it is until that run. Under `--dry-run` the hold is reported
+and nothing is written. An interactive
 submit (no `--auto-approve`) keeps the update path: a human who edits the task file
 before `/rfe-submit` is making a manual revision and carries no flag either.
 
