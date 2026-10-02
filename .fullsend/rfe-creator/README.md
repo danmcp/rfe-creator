@@ -40,7 +40,7 @@ GOOGLE_APPLICATION_CREDENTIALS=<your-local-json-key-file-for-gcp>
 # Required variables
 # In the format of `/rfe-review RHAIRFE-1234`, `/rfe-auto-fix RHAIRFE-1234 RHAIRFE-5678`, etc.
 FULLSEND_TASK="/rfe-review RHAIRFE-1234"
-JIRA_SERVER=https://<your-jira-instance>
+JIRA_SERVER=https://redhat.atlassian.net
 JIRA_USER="<user-of-the-token@example.com>"
 JIRA_TOKEN="<token>"
 ```

@@ -3,7 +3,7 @@ set -euo pipefail
 
 echo "::notice::rfe-creator pre-script starting"
 
-cd ${TARGET_REPO_DIR}/
+cd "${TARGET_REPO_DIR}/"
 for t in $(python3 scripts/type_registry.py list); do
   bash scripts/bootstrap.sh --type "$t"
 done

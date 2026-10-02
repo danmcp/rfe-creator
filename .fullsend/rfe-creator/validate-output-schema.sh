@@ -76,6 +76,7 @@ fi
 STATE=""
 [[ -n "${TARGET_REPO_DIR:-}" ]] && STATE="${TARGET_REPO_DIR}/tmp/pipeline-state.yaml"
 
+is_pipeline=0
 [[ -n "${STATE}" && -f "${STATE}" ]] && is_pipeline=1
 if [[ "${is_pipeline}" == 0 ]]; then
   exit 0
