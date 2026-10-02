@@ -674,9 +674,12 @@ class TestInterruptedRevisionHold:
         assert "rfe-creator-autofix-rubric-pass" not in labels
         assert not any(label.startswith("rfe-creator-feasibility-") for label in labels)
 
-    def test_held_item_stays_unprocessed_for_the_next_run(self, art_dir, jira):
+    @pytest.mark.parametrize("processed_at_fetch", [False, True])
+    def test_held_item_stays_unprocessed_for_the_next_run(self, art_dir, jira, processed_at_fetch):
         """The hold is not a disposal: the next scheduled run must pick the item up
-        again and redo the revision properly, so the snapshot keeps processed: false."""
+        again and redo the revision properly, so the snapshot ends processed: false.
+        A --reprocess fetch writes a selected unchanged item as processed: true, so the
+        hold resets the flag rather than merely not setting it (CodeRabbit on #210)."""
         self._seed(art_dir, jira, auto_revised="false")
         snap_dir = os.path.join(art_dir, "auto-fix-runs")
         os.makedirs(snap_dir, exist_ok=True)
@@ -686,7 +689,7 @@ class TestInterruptedRevisionHold:
                 {
                     "query_timestamp": "2026-09-29T00:00:00Z",
                     "timestamp": "2026-09-29T00:00:01Z",
-                    "issues": {"RHAIRFE-1234": {"processed": False, "hash": "abc"}},
+                    "issues": {"RHAIRFE-1234": {"processed": processed_at_fetch, "hash": "abc"}},
                 },
                 f,
             )

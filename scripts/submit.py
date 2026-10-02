@@ -1516,6 +1516,7 @@ def main():
     results = {}
     submitted_hashes = {}
     mark_processed_ids = []
+    reset_processed_ids = []  # held entries: not disposed of, selected again next run
     for entry in plan:
         item_id = entry[id_field]
         jira_key = entry.get("jira_key") or item_id
@@ -1556,8 +1557,11 @@ def main():
                             print(f"  {item_id}: Labels: {', '.join(labels)}")
                     # A held entry published nothing: its task keeps its status so a
                     # re-run of submit on the same artifacts holds it again instead of
-                    # skipping it as submitted.
-                    if not entry.get("leave_unprocessed"):
+                    # skipping it as submitted, and its snapshot entry is reset to
+                    # unprocessed (a --reprocess fetch writes it as processed).
+                    if entry.get("leave_unprocessed"):
+                        reset_processed_ids.append(item_id)
+                    else:
                         update_frontmatter(
                             entry["task_path"], {"status": "Submitted"}, cfg["task_schema"]
                         )
@@ -1692,17 +1696,18 @@ def main():
     print()
 
     # Update snapshot
-    if (submitted_hashes or mark_processed_ids) and not args.dry_run:
+    if (submitted_hashes or mark_processed_ids or reset_processed_ids) and not args.dry_run:
         snap_dir = os.path.join(args.artifacts_dir, "auto-fix-runs")
-        snap_kwargs = {"mark_processed": mark_processed_ids}
+        snap_kwargs = {"mark_processed": mark_processed_ids, "reset_processed": reset_processed_ids}
         if cfg["snapshot_prefix"]:
             snap_kwargs["prefix"] = cfg["snapshot_prefix"]
         updated = update_snapshot_hashes(submitted_hashes, snap_dir, **snap_kwargs)
         if updated:
+            held = f", {len(reset_processed_ids)} held" if reset_processed_ids else ""
             print(
                 f"  Updated snapshot with {len(submitted_hashes)} "
                 f"post-submit hashes, {len(mark_processed_ids)} "
-                f"mark-processed: {updated}"
+                f"mark-processed{held}: {updated}"
             )
         else:
             print("  Warning: no snapshot found to update", file=sys.stderr)

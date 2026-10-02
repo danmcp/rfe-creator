@@ -141,7 +141,10 @@ The command sequence is ordered to minimize data loss on failure:
 
 1. **Submit updates the snapshot**: After Jira API calls succeed,
    `submit.py` updates the snapshot with post-submit hashes so the
-   next fetch doesn't re-flag our own changes.
+   next fetch doesn't re-flag our own changes, marks the items it
+   disposed of without a content change as processed, and resets
+   `processed` for an item it held (an interrupted revision, see the
+   pipeline correctness reference §5.12) so the next fetch selects it.
 
 2. **Single push at the end**: Everything is pushed once after all
    work is done. If the push fails, submitted issues are re-processed
@@ -441,14 +444,20 @@ These invariants must hold and should guide future refactors:
 6. **`update_snapshot_hashes` is additive.** It writes dict-format
    entries (`{hash, processed: true}`) to the latest snapshot, adding
    or updating entries. It also supports `mark_processed` to set
-   `processed: true` on existing entries without changing their hash.
-
-7. **`processed: true` resets to `false` only on hash change.**
-   `cmd_fetch` resets `processed` to `false` when the content hash
-   differs from the snapshot. If the hash matches and `processed` is
-   already `true`, it stays `true`. This ensures that externally
-   edited issues are re-processed even if previously completed.
-
+   `processed: true` on existing entries without changing their hash,
+   and `reset_processed` to set `processed: false` on existing entries
+   without changing their hash (the one write that lowers the flag,
+   see 7). It never adds an entry through `reset_processed`.
+7. **`processed: true` resets to `false` on hash change, or when
+   submit held the item.** `cmd_fetch` resets `processed` to `false`
+   when the content hash differs from the snapshot. If the hash matches
+   and `processed` is already `true`, it stays `true`, including for an
+   unchanged item a `--reprocess` run selects. This ensures that
+   externally edited issues are re-processed even if previously
+   completed. The one other path that lowers the flag is `submit.py`
+   holding an interrupted revision (pipeline correctness reference
+   §5.12): the item was selected but not disposed of, so submit resets
+   it through `reset_processed` and the next fetch selects it again.
 8. **Only `submit.py` sets `processed: true`.** `cmd_fetch` never
    sets `processed: true` — it only preserves or resets it.
    `update_snapshot_hashes` (called by `submit.py`) is the sole path

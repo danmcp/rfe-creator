@@ -433,7 +433,11 @@ def write_id_file(path, ids):
 
 
 def update_snapshot_hashes(
-    hashes, snapshot_dir=None, mark_processed=None, prefix=_RFE_SNAPSHOT_PREFIX
+    hashes,
+    snapshot_dir=None,
+    mark_processed=None,
+    prefix=_RFE_SNAPSHOT_PREFIX,
+    reset_processed=None,
 ):
     """Update the latest snapshot with post-submit content hashes.
 
@@ -442,7 +446,11 @@ def update_snapshot_hashes(
     our own changes.
 
     Also marks additional IDs as processed without changing their hash
-    (e.g., reviewed but no content changes needed).
+    (e.g., reviewed but no content changes needed), and resets
+    ``processed`` for IDs the submit deliberately left undone (an
+    interrupted-revision hold): a ``--reprocess`` fetch writes a selected
+    unchanged item as processed, so without the reset a held item would
+    stay ``processed: true`` and the next fetch would not select it.
     """
     snap_dir = snapshot_dir or SNAPSHOT_DIR
     pattern = os.path.join(snap_dir, f"{prefix}*.yaml")
@@ -466,6 +474,13 @@ def update_snapshot_hashes(
                                 entry["processed"] = True
                             else:
                                 issues[key] = {"hash": entry, "processed": True}
+                if reset_processed:
+                    for key in reset_processed:
+                        entry = issues.get(key)
+                        if isinstance(entry, dict):
+                            entry["processed"] = False
+                        elif entry is not None:
+                            issues[key] = {"hash": entry, "processed": False}
                 with open(f, "w", encoding="utf-8") as fh:
                     yaml.dump(data, fh, default_flow_style=False, sort_keys=False)
                 return f

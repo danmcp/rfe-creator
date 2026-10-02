@@ -1042,7 +1042,9 @@ verdict labels removed because the review's verdicts were given on the body befo
 rewrite), the task keeps
 its status (nothing was published, so a re-run of submit on the same artifacts holds it
 again instead of skipping it as submitted), and the item is left **unprocessed** in the
-snapshot. The retry needs one more thing: `snapshot_fetch.diff_snapshots` selects an
+snapshot: not merely unmarked but reset, because a `--reprocess` fetch records a selected
+unchanged item as `processed: true` and the next fetch would otherwise not select it. The
+retry needs one more thing: `snapshot_fetch.diff_snapshots` selects an
 unprocessed id whose Jira content did not change as *new*, not *changed*, and
 `check_resume` skips a new id whose local review (restored from the results repository)
 still says `pass: true` with no `error`. The hold therefore also writes `pass: false` and
