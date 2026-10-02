@@ -531,6 +531,27 @@ class TestInterruptedRevisionHold:
         process_ids, skip_ids = check_resume.check_resume(["RHAIRFE-1234"], [], art_dir)
         assert process_ids == ["RHAIRFE-1234"] and skip_ids == []
 
+    def test_hold_that_cannot_be_recorded_stops_the_run(self, art_dir, jira):
+        """CodeRabbit on #210: a hold that is not on disk is no hold (the next run would
+        skip the item on its still-passing review), so a failed review write stops the
+        submit before any Jira write of the plan."""
+        self._seed(art_dir, jira, auto_revised="false")
+        review = f"{art_dir}/rfe-reviews/RHAIRFE-1234-review.md"
+        reviews_dir = os.path.dirname(review)
+        os.chmod(review, 0o444)
+        os.chmod(reviews_dir, 0o555)
+        try:
+            r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        finally:
+            os.chmod(reviews_dir, 0o755)
+            os.chmod(review, 0o644)
+        assert r.returncode != 0
+        assert "could not record the interrupted revision" in r.stderr
+        assert _read_frontmatter(review)["pass"] is True
+        issue = jira.get("RHAIRFE-1234")
+        assert issue["fields"]["labels"] == []
+        assert "Original content." in self._desc_text(issue)
+
     def test_dry_run_hold_writes_nothing(self, art_dir, jira):
         """CodeRabbit on #210: the planning path runs under --dry-run too, so the hold
         must be reported without touching the review, the task or Jira."""

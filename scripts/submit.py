@@ -1371,11 +1371,17 @@ def main():
                         cfg["review_schema"],
                     )
                 except Exception as e:
+                    # A hold that is not on disk is no hold: the next run would skip the
+                    # item on its still-passing review and nothing would ever redo it
+                    # (CodeRabbit on #210). Stop here, before any Jira write of this plan.
                     print(
-                        f"  Warning: could not record the interrupted revision on {item_id}'s "
-                        f"review ({e}).",
+                        f"Error: could not record the interrupted revision on {item_id}'s "
+                        f"review ({e}); not submitting.",
                         file=sys.stderr,
                     )
+                    raise RuntimeError(
+                        f"could not persist the interrupted-revision hold for {item_id}"
+                    ) from e
             review_data["pass"] = False
             review_data["needs_attention"] = True
             review_data["needs_attention_reason"] = reason
