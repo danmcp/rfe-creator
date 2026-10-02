@@ -1365,3 +1365,18 @@ def parse_child_initiative(path):
     Returns: (title, priority, full_markdown, cleaned_markdown)
     """
     return parse_child(path, _TYPES.get("initiative"))
+
+
+def auto_approve_qualifies(review_data):
+    """The one auto-approve gate, shared by submit.py (new and existing items) and
+    split_submit.py (children at creation): an explicitly feasible rubric pass with no
+    review error. ``indeterminate`` is not a basis for transitioning a ticket on its own,
+    and a review carrying an ``error`` has no verdict at all, whatever its ``pass`` and
+    ``feasibility`` fields say. ``needs_attention`` is advisory: it drives the label, not
+    the transition."""
+    return bool(
+        review_data
+        and not review_data.get("error")
+        and review_data.get("pass", False)
+        and review_data.get("feasibility") == "feasible"
+    )

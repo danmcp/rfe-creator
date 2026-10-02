@@ -33,7 +33,7 @@ sys.stdout.reconfigure(line_buffering=True)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import type_registry  # noqa: E402
 from artifact_utils import (  # noqa: E402
-    ValidationError,
+    auto_approve_qualifies,
     find_review_file,
     parse_child,
     read_frontmatter_validated,
@@ -44,6 +44,7 @@ from artifact_utils import (  # noqa: E402
 from jira_utils import (  # noqa: E402
     add_comment,
     add_labels,
+    approval_comment,
     archival_comment_adf,
     check_description_conflict,
     create_issue,
@@ -56,6 +57,7 @@ from jira_utils import (  # noqa: E402
     require_env,
     search_issues,
     text_to_adf_paragraph,
+    transition_issue,
 )
 
 MAX_LEAF_CHILDREN = 6
@@ -162,6 +164,10 @@ def _split_config(desc, binding=None):
         "find_review_fn": find_review_file,
         "do_rebuild_index": desc.get("index.enabled"),
         "alignment_labels": dict(alignment) if alignment is not None else None,
+        # Child approval at creation (RHAIFIRST-82): the same descriptor values submit.py
+        # reads for --auto-approve. A type without an approved state never transitions.
+        "approved_status": desc.get("identity.jira.state_map.approved", None),
+        "type_label": desc.get("conventions.type_label"),
     }
 
 
@@ -660,10 +666,79 @@ def phase1_persist(server, user, token, parent_key, children, state, config, dry
         print(f"  Phase 1: Posted content for child {child_id} ({idx}/{total}): {title}")
 
 
+def _load_child_review(find_review, artifacts_dir, child_id, review_schema):
+    """The child's validated review frontmatter, or None when it has none or it does not
+    validate (the labels are then composed without review data, as before)."""
+    review_path = find_review(artifacts_dir, child_id)
+    if not review_path:
+        return None
+    try:
+        review_data, _ = read_frontmatter_validated(review_path, review_schema)
+    except Exception as exc:
+        # The child is still created, with the labels its parent carries and no
+        # review-derived ones, exactly as before; the warning is what makes a skipped
+        # approval explainable from the job log (CodeRabbit on #211).
+        print(
+            f"  WARNING: could not load the review for {child_id} "
+            f"({type(exc).__name__}: {exc}); proceeding without review data",
+            file=sys.stderr,
+        )
+        return None
+    return review_data
+
+
+def _approve_child(server, user, token, child_key, review_data, config, dry_run):
+    """Transition a created (or recovered) child to the type's approved status when its
+    review passes the gate submit.py applies to every other item: an explicitly feasible
+    rubric pass with no review error (artifact_utils.auto_approve_qualifies). Without this
+    the child's rubric-pass label excludes it from every later run and nothing ever
+    transitions it (RHAIFIRST-82). Idempotent: an already-approved child is skipped, so a
+    run that died between creation and approval completes it without a second comment.
+    Reached only under --auto-approve, which submit.py forwards and the interactive skills
+    never pass."""
+    approved = config.get("approved_status")
+    if not approved or not auto_approve_qualifies(review_data):
+        return
+    if dry_run:
+        print(f"           Would transition {child_key} to {approved}")
+        return
+    issue = get_issue(server, user, token, child_key, fields=["status"])
+    status = ((issue.get("fields") or {}).get("status") or {}).get("name")
+    if status == approved:
+        print(f"           {child_key} already {approved}, skipping transition")
+        return
+    if transition_issue(server, user, token, child_key, approved):
+        print(f"           Transitioned {child_key} to {approved}")
+        comment = approval_comment(config["comment_marker"], config["type_label"], approved)
+        try:
+            add_comment(server, user, token, child_key, markdown_to_adf(comment))
+        except Exception as exc:
+            # The transition is already applied; a failed comment must not abort the split
+            # (exit 4 would quarantine the parent) and the next run skips an approved child,
+            # so say so where an operator reads it (CodeRabbit on #211).
+            print(
+                f"  WARNING: {child_key} transitioned to {approved} but the approval "
+                f"comment failed ({type(exc).__name__}: {exc}); post it by hand",
+                file=sys.stderr,
+            )
+            return
+        print(f"           Posted auto-approve comment on {child_key}")
+
+
 def phase2_create_link(
-    server, user, token, parent_key, children, state, artifacts_dir, config, dry_run
+    server,
+    user,
+    token,
+    parent_key,
+    children,
+    state,
+    artifacts_dir,
+    config,
+    dry_run,
+    auto_approve=False,
 ):
-    """Create tickets, link to parent, and post confirmation comments."""
+    """Create tickets, link to parent, post confirmation comments and, under
+    ``auto_approve``, transition each qualifying child to the approved status."""
     total = len(children)
     label_prefix = config["label_prefix"]
     comment_marker = config["comment_marker"]
@@ -677,12 +752,15 @@ def phase2_create_link(
     split_link_type = _tracker_for(config)["split_link_type"]
 
     for idx, (child_id, title, priority, artifact_path) in enumerate(children, 1):
+        review_data = _load_child_review(find_review, artifacts_dir, child_id, review_schema)
         done = state.phase2_done.get(child_id)
         if done and done["linked"] and done["commented"]:
             print(
                 f"  Phase 2: Child {child_id} ({idx}/{total}) already created as "
                 f"{done['key']}, skipping"
             )
+            if auto_approve:
+                _approve_child(server, user, token, done["key"], review_data, config, dry_run)
             continue
 
         if done:
@@ -701,6 +779,8 @@ def phase2_create_link(
                     print(f"           Would link {child_key} to {parent_key}")
                 if not done["commented"]:
                     print(f"           Would post confirmation for {child_key}")
+                if auto_approve:
+                    _approve_child(server, user, token, child_key, review_data, config, True)
                 done["linked"] = True
                 done["commented"] = True
                 continue
@@ -715,6 +795,8 @@ def phase2_create_link(
                 )
                 add_comment(server, user, token, parent_key, text_to_adf_paragraph(confirm_text))
                 done["commented"] = True
+            if auto_approve:
+                _approve_child(server, user, token, child_key, review_data, config, dry_run)
             continue
 
         if child_id not in state.phase1_done:
@@ -739,25 +821,20 @@ def phase2_create_link(
             ),
         ]
 
-        review_path = find_review(artifacts_dir, child_id)
         review_rec = None
         attn_reason = None
         feas_label = None
         align_label = None
-        if review_path:
-            try:
-                review_data, _ = read_frontmatter_validated(review_path, review_schema)
-                review_rec = review_data.get("recommendation")
-                if review_data.get("auto_revised", False):
-                    labels.append(f"{label_prefix}-auto-revised")
-                if review_data.get("needs_attention", False):
-                    labels.append(f"{label_prefix}-needs-attention")
-                    attn_reason = review_data.get("needs_attention_reason")
-                feas_label = feas_labels.get(review_data.get("feasibility"))
-                if alignment_labels:
-                    align_label = alignment_labels.get(review_data.get("alignment"))
-            except (ValidationError, Exception):
-                pass  # proceed without review data
+        if review_data:
+            review_rec = review_data.get("recommendation")
+            if review_data.get("auto_revised", False):
+                labels.append(f"{label_prefix}-auto-revised")
+            if review_data.get("needs_attention", False):
+                labels.append(f"{label_prefix}-needs-attention")
+                attn_reason = review_data.get("needs_attention_reason")
+            feas_label = feas_labels.get(review_data.get("feasibility"))
+            if alignment_labels:
+                align_label = alignment_labels.get(review_data.get("alignment"))
         if review_rec == "submit":
             labels.append(f"{label_prefix}-autofix-rubric-pass")
         if feas_label:
@@ -781,6 +858,10 @@ def phase2_create_link(
             if state.parent_reporter_id:
                 print(f"           Reporter: {state.parent_reporter_id}")
             print(f"           Would link to {parent_key} via '{split_link_type}'")
+            if auto_approve:
+                _approve_child(
+                    server, user, token, f"the new child for {child_id}", review_data, config, True
+                )
             if attn_reason:
                 print("           Would post needs-attention comment")
             state.phase2_done[child_id] = {
@@ -832,6 +913,8 @@ def phase2_create_link(
             print("           Posted needs-attention comment")
 
         state.phase2_done[child_id] = {"key": child_key, "linked": True, "commented": True}
+        if auto_approve:
+            _approve_child(server, user, token, child_key, review_data, config, dry_run)
 
 
 def build_split_summary_adf(server, children, state, total, config):
@@ -972,6 +1055,15 @@ def main():
     )
     parser.add_argument(
         "--artifacts-dir", default="artifacts", help="Artifacts directory (default: artifacts)"
+    )
+    parser.add_argument(
+        "--auto-approve",
+        action="store_true",
+        help=(
+            "Transition each created child whose review passed rubric and feasibility to "
+            "the type's approved status (the gate submit.py applies). Forwarded by "
+            "submit.py; the interactive skills never pass it."
+        ),
     )
     args = parser.parse_args()
 
@@ -1197,6 +1289,7 @@ def main():
             args.artifacts_dir,
             config,
             args.dry_run,
+            auto_approve=args.auto_approve,
         )
         print()
 

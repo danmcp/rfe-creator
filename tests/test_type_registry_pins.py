@@ -761,7 +761,17 @@ class TestSubmitTypeConfigs:
         # descriptor's state or the integration suites would approve into a different status
         # than production.
         source = read("scripts/submit.py")
-        assert 'review_data.get("feasibility") == "feasible"' in source
+        # The gate is implemented once, in artifact_utils.auto_approve_qualifies, and read by
+        # both writers: submit.py for new and existing items, split_submit.py for children at
+        # creation (RHAIFIRST-82). The source form of the gate and its two call sites are
+        # pinned so a re-introduced inline copy is a visible change.
+        gate = read("scripts/artifact_utils.py")
+        assert 'review_data.get("feasibility") == "feasible"' in gate
+        assert 'review_data.get("pass", False)' in gate
+        assert 'not review_data.get("error")' in gate
+        assert "auto_approve = auto_approve_qualifies(review_data)" in source
+        assert "auto_approve_qualifies(review_data)" in read("scripts/split_submit.py")
+        assert 'review_data.get("feasibility") == "feasible"' not in source
         assert "feasible" == list(ctx.labels["feasibility"])[0]
         approved = ctx.jira["state_map"]["approved"]
         assert 'approved_status = desc.get("identity.jira.state_map.approved", None)' in source
@@ -769,10 +779,16 @@ class TestSubmitTypeConfigs:
         assert "if args.auto_approve and not approved_status:" in source
         assert "transition_issue(server, user, token, jira_key, approved_status)" in source
         assert 'entry.get("jira_status") == approved_status' in source
-        assert "f\"*{cfg['comment_prefix']}* This {type_label} has been automatically \"" in source
+        # The approve comment is built once, by jira_utils.approval_comment, for both writers.
+        comment = read("scripts/jira_utils.py")
+        assert 'f"*{comment_prefix}* This {type_label} has been automatically "' in comment
         assert (
             'f"transitioned to {approved_status} status based on passing rubric scoring and "'
-            in source
+            in comment
+        )
+        assert 'approval_comment(cfg["comment_prefix"], type_label, approved_status)' in source
+        assert 'approval_comment(config["comment_marker"], config["type_label"], approved)' in read(
+            "scripts/split_submit.py"
         )
         assert 'transition_issue(server, user, token, jira_key, "Approved")' not in source
         assert f'_global_approve = (None, "Approve", "{approved}")' in read("tests/conftest.py"), (
