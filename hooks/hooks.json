@@ -1,5 +1,5 @@
 {
-  "description": "rfe-creator: re-inject the pipeline state after an auto-compaction. The same SessionStart/compact handler as the checkout's .claude/settings.json, rooted at the plugin directory; opt-in through RFE_CREATOR_ENABLE_CONTEXT_HOOK=1 in the session's environment.",
+  "description": "rfe-creator pipeline hooks: after an auto-compaction, re-inject the pipeline state; on Stop, keep the orchestrator in the dispatch loop until the pipeline is DONE. The same handlers as the checkout's .claude/settings.json, rooted at the plugin directory; both opt in through RFE_CREATOR_ENABLE_CONTEXT_HOOK=1 in the session's environment.",
   "hooks": {
     "SessionStart": [
       {
@@ -8,6 +8,17 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/pipeline_state.py\" post-compact-hook",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/pipeline_state.py\" stop-guard",
             "timeout": 30
           }
         ]

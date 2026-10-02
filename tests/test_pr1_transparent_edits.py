@@ -869,6 +869,10 @@ class TestSettingsAllowlist:
             assert any(cmd.startswith(p) for p in prefixes), (cmd, prefixes)
 
     def test_hooks_and_directories_untouched(self):
+        # The two pipeline hooks: compaction recovery and the Stop guard (both
+        # opt-in through RFE_CREATOR_ENABLE_CONTEXT_HOOK); hooks/hooks.json
+        # carries the same pair rooted at the plugin, pinned by
+        # tests/test_plugin_manifest.py.
         assert self.settings["hooks"] == {
             "SessionStart": [
                 {
@@ -880,7 +884,17 @@ class TestSettingsAllowlist:
                         }
                     ],
                 }
-            ]
+            ],
+            "Stop": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "python3 scripts/pipeline_state.py stop-guard",
+                        }
+                    ],
+                }
+            ],
         }
         assert self.settings["permissions"]["additionalDirectories"] == [
             "/tmp/rfe-assess",
