@@ -1370,16 +1370,18 @@ def main():
                     )
             review_data["needs_attention"] = True
             review_data["needs_attention_reason"] = reason
-            # The review's verdict was given on the body before the rewrite, so it says
-            # nothing about the body in the task file now: the held entry carries the
-            # needs-attention label only, no verdict labels, and a rubric-pass label the
-            # item already has comes off until the re-run reviews the current text.
+            # The review's verdicts were given on the body before the rewrite, so they
+            # say nothing about the body in the task file now: the held entry carries the
+            # needs-attention label only, no verdict labels, and the rubric-pass and
+            # feasibility verdict labels the item already has come off until the re-run
+            # reviews the current text.
             held_labels = [f"{cfg['label_prefix']}-needs-attention"]
-            held_remove = (
-                [cfg["rubric_pass_label"]]
-                if cfg["rubric_pass_label"] and cfg["rubric_pass_label"] in original_labels
-                else []
+            stale_verdict_labels = [cfg["rubric_pass_label"]] + list(
+                cfg["feasibility_labels"].values()
             )
+            held_remove = [
+                label for label in stale_verdict_labels if label and label in original_labels
+            ]
             plan.append(
                 {
                     id_field: item_id,

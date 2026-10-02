@@ -534,19 +534,16 @@ class TestInterruptedRevisionHold:
     def test_held_task_keeps_its_status_and_gets_no_verdict_labels(self, art_dir, jira):
         """CodeRabbit on #210: nothing was published, so the task is not marked
         Submitted (a re-run of submit on the same artifacts holds it again rather than
-        skipping it), and the review's verdict, given on the body before the rewrite,
-        puts no pass labels on the current text: the needs-attention label only, and an
-        existing rubric-pass label comes off until the re-run reviews the new body."""
-        self._seed(
-            art_dir,
-            jira,
-            auto_revised="false",
-            original_labels=("rfe-creator-autofix-rubric-pass", "keep-me"),
-        )
+        skipping it), and the review's verdicts, given on the body before the rewrite,
+        put no pass labels on the current text: the needs-attention label only, and the
+        existing rubric-pass and feasibility verdict labels come off until the re-run
+        reviews the new body."""
+        seeded = ("rfe-creator-autofix-rubric-pass", "rfe-creator-feasibility-pass", "keep-me")
+        self._seed(art_dir, jira, auto_revised="false", original_labels=seeded)
         jira.request(
             "PUT",
             "/rest/api/3/issue/RHAIRFE-1234",
-            {"fields": {"labels": ["rfe-creator-autofix-rubric-pass", "keep-me"]}},
+            {"fields": {"labels": list(seeded)}},
         )
         r = _run_submit(art_dir, jira.url, ["--auto-approve"])
         assert r.returncode == 0, r.stderr

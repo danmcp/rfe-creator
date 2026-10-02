@@ -1037,8 +1037,9 @@ auto-compaction and the post-agent submit pushed the unreviewed text to RHAIRFE-
 Under `--auto-approve` (the automation's mode) `submit.py` now holds such an item: the
 description is not updated, the review gets `needs_attention: true` with a reason that
 names the interruption, the plan entry runs as `Label only` (the needs-attention label
-and comment, no approval, no verdict labels, and an existing rubric-pass label removed
-because the review's verdict was given on the body before the rewrite), the task keeps
+and comment, no approval, no verdict labels, and the existing rubric-pass and feasibility
+verdict labels removed because the review's verdicts were given on the body before the
+rewrite), the task keeps
 its status (nothing was published, so a re-run of submit on the same artifacts holds it
 again instead of skipping it as submitted), and the item is left **unprocessed** in the
 snapshot. That is what makes the retry: `snapshot_fetch.diff_snapshots` selects an
