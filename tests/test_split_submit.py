@@ -1123,3 +1123,52 @@ class TestParentVerificationFailsClosed:
         assert code == 0
         assert out.err == ""
         assert "Would create RHAIRFE ticket for child 1/2: Child RFE 1" in out.out
+
+
+class TestApproveChildWarnings:
+    """The two failure shapes of child approval are reported, not raised (CodeRabbit on
+    #211): an unreadable review skips the approval with a warning, and a failed approval
+    comment after a successful transition warns instead of aborting the split."""
+
+    CONFIG = {"approved_status": "Approved", "comment_marker": "[RFE Creator]", "type_label": "RFE"}
+    PASSING = {"pass": True, "feasibility": "feasible", "recommendation": "submit"}
+
+    def test_unreadable_review_warns_and_skips(self, tmp_path, capsys):
+        reviews = tmp_path / "rfe-reviews"
+        reviews.mkdir()
+        (reviews / "RFE-001-review.md").write_text("---\nrfe_id: RFE-001\nscore: not-an-int\n---\n")
+        data = split_submit._load_child_review(
+            lambda art, cid: str(reviews / f"{cid}-review.md"),
+            str(tmp_path),
+            "RFE-001",
+            "rfe-review",
+        )
+        assert data is None
+        err = capsys.readouterr().err
+        assert "WARNING: could not load the review for RFE-001" in err
+
+    def test_comment_failure_after_transition_warns_instead_of_raising(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            split_submit, "get_issue", lambda *a, **k: {"fields": {"status": {"name": "New"}}}
+        )
+        monkeypatch.setattr(split_submit, "transition_issue", lambda *a, **k: True)
+
+        def failing_comment(*a, **k):
+            raise RuntimeError("HTTP 503")
+
+        monkeypatch.setattr(split_submit, "add_comment", failing_comment)
+        split_submit._approve_child("srv", "u", "t", "RHAIRFE-7", self.PASSING, self.CONFIG, False)
+        out = capsys.readouterr()
+        assert "Transitioned RHAIRFE-7 to Approved" in out.out
+        assert "Posted auto-approve comment" not in out.out
+        assert "approval comment failed (RuntimeError: HTTP 503)" in out.err
+
+    def test_already_approved_child_is_skipped(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            split_submit, "get_issue", lambda *a, **k: {"fields": {"status": {"name": "Approved"}}}
+        )
+        monkeypatch.setattr(
+            split_submit, "transition_issue", lambda *a, **k: pytest.fail("must not transition")
+        )
+        split_submit._approve_child("srv", "u", "t", "RHAIRFE-7", self.PASSING, self.CONFIG, False)
+        assert "already Approved, skipping transition" in capsys.readouterr().out

@@ -33,7 +33,6 @@ sys.stdout.reconfigure(line_buffering=True)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import type_registry  # noqa: E402
 from artifact_utils import (  # noqa: E402
-    ValidationError,
     auto_approve_qualifies,
     find_review_file,
     parse_child,
@@ -675,7 +674,15 @@ def _load_child_review(find_review, artifacts_dir, child_id, review_schema):
         return None
     try:
         review_data, _ = read_frontmatter_validated(review_path, review_schema)
-    except (ValidationError, Exception):
+    except Exception as exc:
+        # The child is still created, with the labels its parent carries and no
+        # review-derived ones, exactly as before; the warning is what makes a skipped
+        # approval explainable from the job log (CodeRabbit on #211).
+        print(
+            f"  WARNING: could not load the review for {child_id} "
+            f"({type(exc).__name__}: {exc}); proceeding without review data",
+            file=sys.stderr,
+        )
         return None
     return review_data
 
@@ -703,7 +710,18 @@ def _approve_child(server, user, token, child_key, review_data, config, dry_run)
     if transition_issue(server, user, token, child_key, approved):
         print(f"           Transitioned {child_key} to {approved}")
         comment = approval_comment(config["comment_marker"], config["type_label"], approved)
-        add_comment(server, user, token, child_key, markdown_to_adf(comment))
+        try:
+            add_comment(server, user, token, child_key, markdown_to_adf(comment))
+        except Exception as exc:
+            # The transition is already applied; a failed comment must not abort the split
+            # (exit 4 would quarantine the parent) and the next run skips an approved child,
+            # so say so where an operator reads it (CodeRabbit on #211).
+            print(
+                f"  WARNING: {child_key} transitioned to {approved} but the approval "
+                f"comment failed ({type(exc).__name__}: {exc}); post it by hand",
+                file=sys.stderr,
+            )
+            return
         print(f"           Posted auto-approve comment on {child_key}")
 
 
