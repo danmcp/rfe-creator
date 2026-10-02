@@ -1120,7 +1120,11 @@ opt-in through `RFE_CREATOR_ENABLE_CONTEXT_HOOK`) closes that path:
   seen by both registrations of the guard (the settings hook and the plugin's copy, in a
   checkout that also has the plugin installed) is counted once: the record keeps a key of
   the event JSON (`session_id`, `stop_hook_active`, `last_assistant_message`) and a
-  matching key reads the count back instead of incrementing it.
+  matching key reads the count back instead of incrementing it. The dedupe holds only for `STOP_GUARD_DEDUPE_SECS` (2 s): the
+  Stop payload carries no event id, so a later Stop that repeats the same assistant text
+  is a new event and counts. If the counter file cannot be made, locked or written, the
+  guard allows the stop with a `cannot keep the block counter` warning instead of
+  blocking on a counter that cannot advance.
 
 The guard does not replace the job-level check that no submit runs without a `REPORT`
 phase; it makes that situation rare.

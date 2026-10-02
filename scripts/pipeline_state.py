@@ -2300,6 +2300,10 @@ STOP_GUARD_FILE = "tmp/pipeline-stop-guard.txt"
 # Code caps consecutive stop-hook continuations at 8 on its own; staying below
 # that keeps the guard's own escape hatch the one that fires, with a message.
 STOP_GUARD_MAX_BLOCKS = 6
+# Two registrations of the guard (settings and plugin) see the same Stop within
+# milliseconds; a Stop that repeats the same assistant text seconds later is a new
+# event. The dedupe therefore holds only inside this window (CodeRabbit on #209).
+STOP_GUARD_DEDUPE_SECS = 2
 
 
 def _file_signature(path):
@@ -2360,38 +2364,45 @@ def _stop_guard_count(fingerprint, event_key=""):
     """Consecutive blocks seen for this fingerprint, after recording this one.
 
     The record is read and written under an exclusive lock, and a Stop whose
-    event key equals the recorded one is the other registration of the same
-    event: it reads the count back instead of incrementing it.
+    event key equals the recorded one within STOP_GUARD_DEDUPE_SECS is the other
+    registration of the same event: it reads the count back instead of
+    incrementing it. Returns None when the bookkeeping itself fails (the file
+    cannot be made, opened, locked or written): the caller then lets the stop
+    through rather than block on a counter that cannot advance.
     """
     count = 1
+    now = int(time.time())
     try:
         os.makedirs(os.path.dirname(STOP_GUARD_FILE), exist_ok=True)
         with open(STOP_GUARD_FILE, "a+", encoding="utf-8") as f:
             try:
                 import fcntl
-
+            except ImportError:
+                fcntl = None  # no advisory locks on this platform; count unlocked
+            if fcntl is not None:
                 fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            except (ImportError, OSError):
-                pass
             f.seek(0)
             parts = f.read().split("\n")
             prev_fp = parts[0] if parts else ""
             prev_count = parts[1].strip() if len(parts) > 1 else ""
             prev_event = parts[2].strip() if len(parts) > 2 else ""
+            prev_ts = parts[3].strip() if len(parts) > 3 else ""
             if prev_fp == fingerprint:
                 try:
                     prev = int(prev_count or 0)
                 except ValueError:
                     prev = 0
-                if event_key and prev_event == event_key:
-                    return prev  # same Stop event, already counted
+                same_event = bool(event_key) and prev_event == event_key
+                recent = prev_ts.isdigit() and now - int(prev_ts) <= STOP_GUARD_DEDUPE_SECS
+                if same_event and recent:
+                    return prev  # the other registration of this Stop, already counted
                 count = prev + 1
             f.seek(0)
             f.truncate()
-            f.write(f"{fingerprint}\n{count}\n{event_key}\n")
+            f.write(f"{fingerprint}\n{count}\n{event_key}\n{now}\n")
             f.flush()
     except OSError:
-        pass
+        return None
     return count
 
 
@@ -2426,6 +2437,14 @@ def cmd_stop_guard(args):
         return
     fingerprint = _stop_guard_fingerprint(state)
     count = _stop_guard_count(fingerprint, _stop_guard_event_key())
+    if count is None:
+        # Fail open: a counter that cannot be kept would block without an escape hatch.
+        print(
+            "[PIPELINE STOP GUARD] cannot keep the block counter "
+            f"({STOP_GUARD_FILE}); allowing the stop. The run is INCOMPLETE.",
+            file=sys.stderr,
+        )
+        return
     if count > STOP_GUARD_MAX_BLOCKS:
         print(
             f"[PIPELINE STOP GUARD] phase {state.get('phase')} unchanged across "

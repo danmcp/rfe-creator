@@ -8,6 +8,7 @@ revision is followed by a review.
 import os
 import subprocess
 import sys
+import time
 import types
 
 import pytest
@@ -251,8 +252,8 @@ class TestInit:
         decision, _ = self._stop_guard(monkeypatch)
         assert decision["decision"] == "block"
         with open(ps.STOP_GUARD_FILE) as f:
-            fingerprint, count = f.read().split("\n", 1)
-        assert fingerprint.startswith("REVIEW|") and count.strip() == "1"
+            fingerprint, count = f.read().split("\n")[:2]
+        assert fingerprint.startswith("REVIEW|") and count == "1"
 
     def test_stop_guard_counter_resets_on_a_new_wave_of_the_same_phase(self, tmp_dir, monkeypatch):
         """CodeRabbit on #209: next-action records a new wave in the wave files
@@ -289,6 +290,35 @@ class TestInit:
         event2 = {**event, "stop_hook_active": True, "last_assistant_message": "still?"}
         self._stop_guard(monkeypatch, stdin=event2)
         assert self._guard_count() == 2
+
+    def test_stop_guard_dedupe_is_time_bounded(self, tmp_dir, monkeypatch):
+        """CodeRabbit on #209: the Stop payload has no event id, so a later Stop that
+        repeats the same assistant text would look like the same event forever and the
+        escape hatch would never open. Only a Stop inside the dedupe window is the other
+        registration; the same key seconds later counts."""
+        ps._save_state(make_state(phase="ASSESS", batch=1, total_batches=1))
+        event = {"session_id": "s1", "stop_hook_active": False, "last_assistant_message": "x"}
+        base = time.time()
+        monkeypatch.setattr(ps.time, "time", lambda: base)
+        self._stop_guard(monkeypatch, stdin=event)
+        self._stop_guard(monkeypatch, stdin=event)
+        assert self._guard_count() == 1
+        monkeypatch.setattr(ps.time, "time", lambda: base + ps.STOP_GUARD_DEDUPE_SECS + 1)
+        self._stop_guard(monkeypatch, stdin=event)
+        assert self._guard_count() == 2
+
+    def test_stop_guard_fails_open_when_the_counter_cannot_be_kept(self, tmp_dir, monkeypatch):
+        """CodeRabbit on #209: if the counter file cannot be made or written, the default
+        count would block on every Stop with no escape hatch. Bookkeeping errors let the
+        stop through and say so."""
+        ps._save_state(make_state(phase="ASSESS", batch=1, total_batches=1))
+        blocker = os.path.join(tmp_dir, "blocker")
+        with open(blocker, "w") as f:
+            f.write("not a directory")
+        monkeypatch.setattr(ps, "STOP_GUARD_FILE", os.path.join(blocker, "guard.txt"))
+        decision, err = self._stop_guard(monkeypatch)
+        assert decision is None
+        assert "cannot keep the block counter" in err
 
     def test_dispatch_context_handles_done(self, tmp_dir):
         """dispatch-context during DONE says pipeline complete, not 'run advance'."""
