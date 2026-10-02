@@ -1353,7 +1353,9 @@ def main():
                 "as it was; re-run the pipeline on this item or review the local revision by hand."
             )
             review_path = _find_review(args.artifacts_dir, item_id, cfg)
-            if review_path:
+            # The planning path runs under --dry-run too: record the hold on the review
+            # only when the run is real (CodeRabbit on #210).
+            if review_path and not args.dry_run:
                 try:
                     update_frontmatter(
                         review_path,
@@ -1368,6 +1370,16 @@ def main():
                     )
             review_data["needs_attention"] = True
             review_data["needs_attention_reason"] = reason
+            # The review's verdict was given on the body before the rewrite, so it says
+            # nothing about the body in the task file now: the held entry carries the
+            # needs-attention label only, no verdict labels, and a rubric-pass label the
+            # item already has comes off until the re-run reviews the current text.
+            held_labels = [f"{cfg['label_prefix']}-needs-attention"]
+            held_remove = (
+                [cfg["rubric_pass_label"]]
+                if cfg["rubric_pass_label"] and cfg["rubric_pass_label"] in original_labels
+                else []
+            )
             plan.append(
                 {
                     id_field: item_id,
@@ -1376,10 +1388,8 @@ def main():
                     "priority": priority,
                     "size": size,
                     "action": "Label only",
-                    "labels": _build_labels(
-                        item_id, review_data, is_existing, rec, original_labels
-                    ),
-                    "remove_labels": [],
+                    "labels": held_labels,
+                    "remove_labels": held_remove,
                     "skip_reason": None,
                     "note": "revision interrupted (auto_revised false): description not published",
                     "task_path": task_path,
@@ -1504,9 +1514,13 @@ def main():
                             print(f"  {item_id}: Removed labels: {', '.join(remove)}")
                         if labels:
                             print(f"  {item_id}: Labels: {', '.join(labels)}")
-                    update_frontmatter(
-                        entry["task_path"], {"status": "Submitted"}, cfg["task_schema"]
-                    )
+                    # A held entry published nothing: its task keeps its status so a
+                    # re-run of submit on the same artifacts holds it again instead of
+                    # skipping it as submitted.
+                    if not entry.get("leave_unprocessed"):
+                        update_frontmatter(
+                            entry["task_path"], {"status": "Submitted"}, cfg["task_schema"]
+                        )
                 results[item_id] = jira_key
                 _post_needs_attention_comment(
                     server, user, token, entry, results, args.dry_run, cfg

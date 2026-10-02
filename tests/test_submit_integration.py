@@ -477,13 +477,19 @@ class TestInterruptedRevisionHold:
             return "\n".join(texts)
         return desc or ""
 
-    def _seed(self, art_dir, jira, auto_revised):
+    def _seed(self, art_dir, jira, auto_revised, original_labels=()):
         jira.create("RHAIRFE-1234", "Test RFE", self.ORIGINAL)
         _write(f"{art_dir}/rfe-originals/RHAIRFE-1234.md", self.ORIGINAL)
+        # original_labels is what FETCH recorded from Jira; the plan reads it from the task.
+        labels_fm = (
+            "original_labels:\n" + "".join(f"- {label}\n" for label in original_labels)
+            if original_labels
+            else ""
+        )
         _write(
             f"{art_dir}/rfe-tasks/RHAIRFE-1234.md",
             "---\nrfe_id: RHAIRFE-1234\ntitle: Test RFE\npriority: Major\nstatus: Ready\n"
-            f"---\n{self.REWRITE}",
+            f"{labels_fm}---\n{self.REWRITE}",
         )
         _write(
             f"{art_dir}/rfe-reviews/RHAIRFE-1234-review.md",
@@ -509,6 +515,47 @@ class TestInterruptedRevisionHold:
         fm = _read_frontmatter(f"{art_dir}/rfe-reviews/RHAIRFE-1234-review.md")
         assert fm["needs_attention"] is True
         assert "Revision interrupted" in fm["needs_attention_reason"]
+
+    def test_dry_run_hold_writes_nothing(self, art_dir, jira):
+        """CodeRabbit on #210: the planning path runs under --dry-run too, so the hold
+        must be reported without touching the review, the task or Jira."""
+        self._seed(art_dir, jira, auto_revised="false")
+        r = _run_submit(art_dir, jira.url, ["--auto-approve", "--dry-run"])
+        assert r.returncode == 0, r.stderr
+        assert "revision interrupted" in r.stdout
+        fm = _read_frontmatter(f"{art_dir}/rfe-reviews/RHAIRFE-1234-review.md")
+        assert fm["needs_attention"] is False
+        assert "needs_attention_reason" not in fm
+        assert _read_frontmatter(f"{art_dir}/rfe-tasks/RHAIRFE-1234.md")["status"] == "Ready"
+        issue = jira.get("RHAIRFE-1234")
+        assert issue["fields"]["labels"] == []
+        assert "Original content." in self._desc_text(issue)
+
+    def test_held_task_keeps_its_status_and_gets_no_verdict_labels(self, art_dir, jira):
+        """CodeRabbit on #210: nothing was published, so the task is not marked
+        Submitted (a re-run of submit on the same artifacts holds it again rather than
+        skipping it), and the review's verdict, given on the body before the rewrite,
+        puts no pass labels on the current text: the needs-attention label only, and an
+        existing rubric-pass label comes off until the re-run reviews the new body."""
+        self._seed(
+            art_dir,
+            jira,
+            auto_revised="false",
+            original_labels=("rfe-creator-autofix-rubric-pass", "keep-me"),
+        )
+        jira.request(
+            "PUT",
+            "/rest/api/3/issue/RHAIRFE-1234",
+            {"fields": {"labels": ["rfe-creator-autofix-rubric-pass", "keep-me"]}},
+        )
+        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        assert r.returncode == 0, r.stderr
+        assert _read_frontmatter(f"{art_dir}/rfe-tasks/RHAIRFE-1234.md")["status"] == "Ready"
+        labels = set(jira.get("RHAIRFE-1234")["fields"]["labels"])
+        assert "rfe-creator-needs-attention" in labels
+        assert "keep-me" in labels
+        assert "rfe-creator-autofix-rubric-pass" not in labels
+        assert not any(label.startswith("rfe-creator-feasibility-") for label in labels)
 
     def test_held_item_stays_unprocessed_for_the_next_run(self, art_dir, jira):
         """The hold is not a disposal: the next scheduled run must pick the item up

@@ -1036,11 +1036,17 @@ re-review — the 2026-09-29 03:12 UTC shape, where the run ended right after an
 auto-compaction and the post-agent submit pushed the unreviewed text to RHAIRFE-3520.
 Under `--auto-approve` (the automation's mode) `submit.py` now holds such an item: the
 description is not updated, the review gets `needs_attention: true` with a reason that
-names the interruption, the plan entry runs as `Label only` (needs-attention label and
-comment, no approval), and the item is left **unprocessed** in the snapshot so the next
-scheduled run picks it up again and redoes the revision properly. An interactive submit
-(no `--auto-approve`) keeps the update path: a human who edits the task file before
-`/rfe-submit` is making a manual revision and carries no flag either.
+names the interruption, the plan entry runs as `Label only` (the needs-attention label
+and comment, no approval, no verdict labels, and an existing rubric-pass label removed
+because the review's verdict was given on the body before the rewrite), the task keeps
+its status (nothing was published, so a re-run of submit on the same artifacts holds it
+again instead of skipping it as submitted), and the item is left **unprocessed** in the
+snapshot. That is what makes the retry: `snapshot_fetch.diff_snapshots` selects an
+unprocessed id as new, `check_resume` does not skip a selected id on its stale local
+review, and the next run re-fetches the issue, re-reviews it and redoes the revision
+properly. Under `--dry-run` the hold is reported and nothing is written. An interactive
+submit (no `--auto-approve`) keeps the update path: a human who edits the task file
+before `/rfe-submit` is making a manual revision and carries no flag either.
 
 ## 6. Cross-References
 
