@@ -2295,6 +2295,183 @@ def cmd_post_compact_hook(args):
     cmd_dispatch_context(args)
 
 
+STOP_GUARD_FILE = "tmp/pipeline-stop-guard.txt"
+# Consecutive blocks tolerated while the state file does not change. Claude
+# Code caps consecutive stop-hook continuations at 8 on its own; staying below
+# that keeps the guard's own escape hatch the one that fires, with a message.
+STOP_GUARD_MAX_BLOCKS = 6
+# Two registrations of the guard (settings and plugin) see the same Stop within
+# milliseconds; a Stop that repeats the same assistant text seconds later is a new
+# event. The dedupe therefore holds only inside this window (CodeRabbit on #209).
+STOP_GUARD_DEDUPE_SECS = 2
+
+
+def _file_signature(path):
+    """mtime and size of a bookkeeping file, or 0|0 when it does not exist."""
+    try:
+        st = os.stat(path)
+        # Nanosecond mtime: two waves of the same phase launched within one second
+        # rewrite the wave files with the same size, and an integer-second signature
+        # would read that as no progress (CodeRabbit on #209).
+        return f"{st.st_mtime_ns}|{st.st_size}"
+    except OSError:
+        return "0|0"
+
+
+def _stop_guard_fingerprint(state):
+    """What must change between two blocked stops for the pipeline to count as
+    progressing: the phase, the batch and the state file, plus the wave
+    bookkeeping (`next-action` records a new wave of the same phase in
+    WAVE_IDS_FILE / WAVE_LAUNCH_FILE without touching the state file, so those
+    files are part of the signature -- otherwise waves progressing inside one
+    phase would look stuck)."""
+    return "|".join(
+        [
+            str(state.get("phase")),
+            str(state.get("batch")),
+            _file_signature(STATE_FILE),
+            _file_signature(WAVE_IDS_FILE),
+            _file_signature(WAVE_LAUNCH_FILE),
+        ]
+    )
+
+
+def _stop_guard_event_key():
+    """Identify the Stop event from the hook's stdin, so that two registrations
+    of the guard (the checkout's settings hook and the plugin's copy, when both
+    are present) count one Stop once. Best effort: no stdin, or stdin that is
+    not the hook JSON, yields an empty key and every call counts."""
+    try:
+        if sys.stdin is None or sys.stdin.isatty():
+            return ""
+        raw = sys.stdin.read()
+    except (OSError, ValueError):
+        return ""
+    if not raw.strip():
+        return ""
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    import hashlib
+
+    material = "|".join(
+        str(data.get(k, "")) for k in ("session_id", "stop_hook_active", "last_assistant_message")
+    )
+    return hashlib.sha256(material.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _stop_guard_count(fingerprint, event_key=""):
+    """Consecutive blocks seen for this fingerprint, after recording this one.
+
+    The record is read and written under an exclusive lock, and a Stop whose
+    event key equals the recorded one within STOP_GUARD_DEDUPE_SECS is the other
+    registration of the same event: it reads the count back instead of
+    incrementing it. Returns None when the bookkeeping itself fails (the file
+    cannot be made, opened, locked or written): the caller then lets the stop
+    through rather than block on a counter that cannot advance.
+    """
+    count = 1
+    now = int(time.time())
+    try:
+        os.makedirs(os.path.dirname(STOP_GUARD_FILE), exist_ok=True)
+        with open(STOP_GUARD_FILE, "a+", encoding="utf-8") as f:
+            try:
+                import fcntl
+            except ImportError:
+                fcntl = None  # no advisory locks on this platform; count unlocked
+            if fcntl is not None:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            f.seek(0)
+            parts = f.read().split("\n")
+            prev_fp = parts[0] if parts else ""
+            prev_count = parts[1].strip() if len(parts) > 1 else ""
+            prev_event = parts[2].strip() if len(parts) > 2 else ""
+            prev_ts = parts[3].strip() if len(parts) > 3 else ""
+            if prev_fp == fingerprint:
+                try:
+                    prev = int(prev_count or 0)
+                except ValueError:
+                    prev = 0
+                same_event = bool(event_key) and prev_event == event_key
+                recent = prev_ts.isdigit() and now - int(prev_ts) <= STOP_GUARD_DEDUPE_SECS
+                if same_event and recent:
+                    return prev  # the other registration of this Stop, already counted
+                count = prev + 1
+            f.seek(0)
+            f.truncate()
+            f.write(f"{fingerprint}\n{count}\n{event_key}\n{now}\n")
+            f.flush()
+    except OSError:
+        return None
+    return count
+
+
+def cmd_stop_guard(args):
+    """Entry point for the Stop hook — keep the orchestrator in the dispatch loop.
+
+    A pipeline run ends when the state reaches DONE, not when the model ends a
+    turn: a text-only turn (or an empty tool call, as after the 2026-09-29
+    auto-compaction) would otherwise end the session mid-pipeline and hand a
+    partial run to the submit step. While `tmp/pipeline-state.yaml` exists and
+    its phase is not DONE, the guard answers the Stop with
+    ``{"decision": "block", "reason": <the recovery banner>}``, which Claude
+    Code shows to the model as the reason to continue.
+
+    Fails open: no state file, an unreadable one, the gate variable unset, or
+    any error lets the stop through. Escape hatch: when STOP_GUARD_MAX_BLOCKS
+    consecutive blocks see the same phase, batch, state file and wave
+    bookkeeping, the pipeline is not progressing and the stop is allowed with a
+    warning, so a stuck run cannot hold the session until the job timeout. The
+    counter resets as soon as any of those changes, and a Stop event seen by
+    both registrations of the guard (settings and plugin) is counted once.
+    """
+    if not os.environ.get("RFE_CREATOR_ENABLE_CONTEXT_HOOK"):
+        return
+    if not os.path.exists(STATE_FILE):
+        return
+    try:
+        state = _load_state()
+    except (SystemExit, Exception):  # noqa: BLE001 - a hook must fail open
+        return
+    if not isinstance(state, dict) or state.get("phase") == "DONE":
+        return
+    fingerprint = _stop_guard_fingerprint(state)
+    count = _stop_guard_count(fingerprint, _stop_guard_event_key())
+    if count is None:
+        # Fail open: a counter that cannot be kept would block without an escape hatch.
+        print(
+            "[PIPELINE STOP GUARD] cannot keep the block counter "
+            f"({STOP_GUARD_FILE}); allowing the stop. The run is INCOMPLETE.",
+            file=sys.stderr,
+        )
+        return
+    if count > STOP_GUARD_MAX_BLOCKS:
+        print(
+            f"[PIPELINE STOP GUARD] phase {state.get('phase')} unchanged across "
+            f"{count - 1} blocked stops; allowing the stop. The run is INCOMPLETE.",
+            file=sys.stderr,
+        )
+        return
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    try:
+        with redirect_stdout(buf):
+            cmd_dispatch_context([])
+    except (SystemExit, Exception):  # noqa: BLE001
+        return
+    reason = (
+        f"The auto-fix pipeline is at phase {state.get('phase')}, not DONE: the run is not "
+        "over, and ending the turn now would hand a partial run to the submit step. "
+        "Do not stop. Continue the dispatch loop now.\n\n" + buf.getvalue().rstrip()
+    )
+    print(json.dumps({"decision": "block", "reason": reason}))
+
+
 COMMANDS = {
     "init": cmd_init,
     "get-phase": cmd_get_phase,
@@ -2311,6 +2488,7 @@ COMMANDS = {
     "diagnose": cmd_diagnose,
     "dispatch-context": cmd_dispatch_context,
     "post-compact-hook": cmd_post_compact_hook,
+    "stop-guard": cmd_stop_guard,
 }
 
 if __name__ == "__main__":

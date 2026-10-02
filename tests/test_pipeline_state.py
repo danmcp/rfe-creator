@@ -8,6 +8,7 @@ revision is followed by a review.
 import os
 import subprocess
 import sys
+import time
 import types
 
 import pytest
@@ -166,6 +167,158 @@ class TestInit:
         assert "SKILL.md" in output
         # Must NOT tell the LLM to run advance
         assert "advance" not in output
+
+    # ── Stop hook guard ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _stop_guard(monkeypatch, gate=True, stdin=None):
+        import io
+        import json
+        from contextlib import redirect_stderr, redirect_stdout
+
+        if gate:
+            monkeypatch.setenv("RFE_CREATOR_ENABLE_CONTEXT_HOOK", "1")
+        else:
+            monkeypatch.delenv("RFE_CREATOR_ENABLE_CONTEXT_HOOK", raising=False)
+        # The hook's stdin: the Stop event JSON, or nothing (an empty payload
+        # yields no event key and every call counts).
+        monkeypatch.setattr(ps.sys, "stdin", io.StringIO(json.dumps(stdin) if stdin else ""))
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            ps.cmd_stop_guard([])
+        decision = json.loads(out.getvalue()) if out.getvalue().strip() else None
+        return decision, err.getvalue()
+
+    @staticmethod
+    def _guard_count():
+        with open(ps.STOP_GUARD_FILE) as f:
+            return int(f.read().split("\n")[1])
+
+    def test_stop_guard_lets_a_session_without_a_pipeline_stop(self, tmp_dir, monkeypatch):
+        decision, err = self._stop_guard(monkeypatch)
+        assert decision is None and err == ""
+
+    def test_stop_guard_is_opt_in(self, tmp_dir, monkeypatch):
+        ps._save_state(make_state(phase="ASSESS"))
+        decision, _ = self._stop_guard(monkeypatch, gate=False)
+        assert decision is None
+
+    def test_stop_guard_lets_a_done_pipeline_stop(self, tmp_dir, monkeypatch):
+        ps._save_state(make_state(phase="DONE"))
+        decision, err = self._stop_guard(monkeypatch)
+        assert decision is None and err == ""
+
+    def test_stop_guard_blocks_mid_pipeline_with_recovery_banner(self, tmp_dir, monkeypatch):
+        """The 2026-09-29 shape: the orchestrator ends its turn at REVISE after a
+        compaction. The guard answers with a block whose reason is the banner."""
+        ps._save_state(make_state(phase="REVISE", batch=1, total_batches=1))
+        decision, _ = self._stop_guard(monkeypatch)
+        assert decision["decision"] == "block"
+        assert "phase REVISE, not DONE" in decision["reason"]
+        assert "[PIPELINE STATE RECOVERY] Current phase: REVISE" in decision["reason"]
+        assert "next-action" in decision["reason"]
+        assert "advance" not in decision["reason"]
+
+    def test_stop_guard_blocks_during_setup_too(self, tmp_dir, monkeypatch):
+        ps._save_state(make_state(phase="INIT"))
+        decision, _ = self._stop_guard(monkeypatch)
+        assert decision["decision"] == "block"
+        assert "Setup in progress" in decision["reason"]
+
+    def test_stop_guard_fails_open_on_an_unreadable_state(self, tmp_dir, monkeypatch):
+        os.makedirs("tmp", exist_ok=True)
+        with open(ps.STATE_FILE, "w") as f:
+            f.write("phase: [unterminated\n")
+        decision, _ = self._stop_guard(monkeypatch)
+        assert decision is None
+
+    def test_stop_guard_escape_hatch_opens_when_state_stops_changing(self, tmp_dir, monkeypatch):
+        """Same phase, batch, wave and mtime across STOP_GUARD_MAX_BLOCKS blocks: the
+        run is stuck, and holding the session until the job timeout helps no one."""
+        ps._save_state(make_state(phase="ASSESS", batch=1, total_batches=1))
+        for _ in range(ps.STOP_GUARD_MAX_BLOCKS):
+            decision, _ = self._stop_guard(monkeypatch)
+            assert decision["decision"] == "block"
+        decision, err = self._stop_guard(monkeypatch)
+        assert decision is None
+        assert "unchanged across" in err and "INCOMPLETE" in err
+
+    def test_stop_guard_counter_resets_when_pipeline_progresses(self, tmp_dir, monkeypatch):
+        ps._save_state(make_state(phase="ASSESS", batch=1, total_batches=1))
+        for _ in range(ps.STOP_GUARD_MAX_BLOCKS):
+            self._stop_guard(monkeypatch)
+        # progress: a new phase → a new fingerprint → blocks resume from one
+        ps._save_state(make_state(phase="REVIEW", batch=1, total_batches=1))
+        decision, _ = self._stop_guard(monkeypatch)
+        assert decision["decision"] == "block"
+        with open(ps.STOP_GUARD_FILE) as f:
+            fingerprint, count = f.read().split("\n")[:2]
+        assert fingerprint.startswith("REVIEW|") and count == "1"
+
+    def test_stop_guard_counter_resets_on_a_new_wave_of_the_same_phase(self, tmp_dir, monkeypatch):
+        """CodeRabbit on #209: next-action records a new wave in the wave files
+        without touching the state file, so waves progressing inside one phase
+        must reset the counter too."""
+        import time
+
+        ps._save_state(make_state(phase="ASSESS", batch=1, total_batches=1))
+        ps._write_ids(ps.WAVE_IDS_FILE, ["RHAIRFE-1", "RHAIRFE-2"])
+        for _ in range(ps.STOP_GUARD_MAX_BLOCKS):
+            self._stop_guard(monkeypatch)
+        # a new wave: different ids and a fresh launch record, same phase and state file
+        time.sleep(1.1)
+        ps._write_ids(ps.WAVE_IDS_FILE, ["RHAIRFE-3"])
+        with open(ps.WAVE_LAUNCH_FILE, "w") as f:
+            f.write("later\n")
+        decision, _ = self._stop_guard(monkeypatch)
+        assert decision["decision"] == "block"
+        assert self._guard_count() == 1
+
+    def test_stop_guard_counts_one_stop_event_once_across_two_registrations(
+        self, tmp_dir, monkeypatch
+    ):
+        """CodeRabbit on #209: with the plugin installed in a checkout both the
+        settings hook and the plugin hook run for the same Stop; they read the
+        same event JSON, so the second one must not increment the counter."""
+        ps._save_state(make_state(phase="ASSESS", batch=1, total_batches=1))
+        event = {"session_id": "s1", "stop_hook_active": False, "last_assistant_message": "done?"}
+        d1, _ = self._stop_guard(monkeypatch, stdin=event)
+        d2, _ = self._stop_guard(monkeypatch, stdin=event)
+        assert d1["decision"] == d2["decision"] == "block"
+        assert self._guard_count() == 1
+        # the next Stop is a new event and counts
+        event2 = {**event, "stop_hook_active": True, "last_assistant_message": "still?"}
+        self._stop_guard(monkeypatch, stdin=event2)
+        assert self._guard_count() == 2
+
+    def test_stop_guard_dedupe_is_time_bounded(self, tmp_dir, monkeypatch):
+        """CodeRabbit on #209: the Stop payload has no event id, so a later Stop that
+        repeats the same assistant text would look like the same event forever and the
+        escape hatch would never open. Only a Stop inside the dedupe window is the other
+        registration; the same key seconds later counts."""
+        ps._save_state(make_state(phase="ASSESS", batch=1, total_batches=1))
+        event = {"session_id": "s1", "stop_hook_active": False, "last_assistant_message": "x"}
+        base = time.time()
+        monkeypatch.setattr(ps.time, "time", lambda: base)
+        self._stop_guard(monkeypatch, stdin=event)
+        self._stop_guard(monkeypatch, stdin=event)
+        assert self._guard_count() == 1
+        monkeypatch.setattr(ps.time, "time", lambda: base + ps.STOP_GUARD_DEDUPE_SECS + 1)
+        self._stop_guard(monkeypatch, stdin=event)
+        assert self._guard_count() == 2
+
+    def test_stop_guard_fails_open_when_the_counter_cannot_be_kept(self, tmp_dir, monkeypatch):
+        """CodeRabbit on #209: if the counter file cannot be made or written, the default
+        count would block on every Stop with no escape hatch. Bookkeeping errors let the
+        stop through and say so."""
+        ps._save_state(make_state(phase="ASSESS", batch=1, total_batches=1))
+        blocker = os.path.join(tmp_dir, "blocker")
+        with open(blocker, "w") as f:
+            f.write("not a directory")
+        monkeypatch.setattr(ps, "STOP_GUARD_FILE", os.path.join(blocker, "guard.txt"))
+        decision, err = self._stop_guard(monkeypatch)
+        assert decision is None
+        assert "cannot keep the block counter" in err
 
     def test_dispatch_context_handles_done(self, tmp_dir):
         """dispatch-context during DONE says pipeline complete, not 'run advance'."""

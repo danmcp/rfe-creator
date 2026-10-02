@@ -180,6 +180,10 @@ When `tmp/pipeline-state.yaml` exists and the phase is not DONE:
    stuck ids itself (docs/wave-stall-guard.md); continue with next-action.
 3. Do not wait for agent-completion notifications — the wait-for-wave command
    is unrelated to the Agent tool's notification system.
+4. Rule 1 is enforced when `RFE_CREATOR_ENABLE_CONTEXT_HOOK=1` is set (production,
+   the evals): a `Stop` hook (`python3 scripts/pipeline_state.py stop-guard`) answers a
+   turn that ends while the phase is not DONE with the recovery banner, so the loop
+   resumes instead of the session ending. It lets a run go after six unchanged blocks.
 
 ## Eval Dataset Policy
 
