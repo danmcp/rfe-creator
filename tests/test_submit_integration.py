@@ -635,6 +635,39 @@ class TestInterruptedRevisionHold:
         assert issue["fields"]["labels"] == []
         assert "Original content." in self._desc_text(issue)
 
+    def test_hold_whose_snapshot_reset_fails_ends_the_run_red(
+        self, art_dir, jira, monkeypatch, capsys
+    ):
+        """CodeRabbit on #210: a snapshot that exists but could not be updated leaves a
+        held item processed: true and no later fetch would select it. The hold itself
+        stands; the run ends red through _finish naming the item. Without any snapshot
+        the hold is a normal success (every id is new to the next fetch)."""
+        self._seed(art_dir, jira, auto_revised="false")
+        snap_dir = os.path.join(art_dir, "auto-fix-runs")
+        os.makedirs(snap_dir, exist_ok=True)
+        with open(os.path.join(snap_dir, "issue-snapshot-20260929-000000.yaml"), "w") as f:
+            yaml.dump({"issues": {"RHAIRFE-1234": {"processed": True, "hash": "abc"}}}, f)
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+        import submit as submit_mod
+
+        monkeypatch.setattr(submit_mod, "update_snapshot_hashes", lambda *a, **k: None)
+        monkeypatch.setenv("JIRA_SERVER", jira.url)
+        monkeypatch.setenv("JIRA_USER", "admin")
+        monkeypatch.setenv("JIRA_TOKEN", "admin")
+        monkeypatch.setattr(
+            sys, "argv", ["submit.py", "--artifacts-dir", art_dir, "--auto-approve"]
+        )
+        with pytest.raises(SystemExit) as exc:
+            submit_mod.main()
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "snapshot could not be updated after holding RHAIRFE-1234" in err
+        assert "failed during submit" in err
+        # the hold itself landed
+        issue = jira.get("RHAIRFE-1234")
+        assert "rfe-creator-needs-attention" in issue["fields"]["labels"]
+        assert "Original content." in self._desc_text(issue)
+
     def test_dry_run_hold_writes_nothing(self, art_dir, jira):
         """CodeRabbit on #210: the planning path runs under --dry-run too, so the hold
         must be reported without touching the review, the task or Jira."""

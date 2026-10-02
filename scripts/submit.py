@@ -75,7 +75,11 @@ from jira_utils import (  # noqa: E402
     transition_issue,
     update_issue,
 )
-from snapshot_fetch import compute_content_hash, update_snapshot_hashes  # noqa: E402
+from snapshot_fetch import (  # noqa: E402
+    compute_content_hash,
+    snapshot_files,
+    update_snapshot_hashes,
+)
 
 # ─── Type Configurations ─────────────────────────────────────────────────────
 
@@ -1709,6 +1713,23 @@ def main():
                 f"post-submit hashes, {len(mark_processed_ids)} "
                 f"mark-processed{held}: {updated}"
             )
+        elif reset_processed_ids and snapshot_files(
+            snap_dir, **({"prefix": snap_kwargs["prefix"]} if "prefix" in snap_kwargs else {})
+        ):
+            # A snapshot exists and the reset did not land: a held item that entered
+            # processed: true stays so, and no later fetch would select it (CodeRabbit
+            # on #210). Say so and end the run red through _finish; the hold itself
+            # (labels, comment, review) stands.
+            print(
+                "Error: the snapshot could not be updated after holding "
+                f"{', '.join(reset_processed_ids)}; a held item may stay processed and "
+                "the next fetch would not select it. Reset its snapshot entry by hand.",
+                file=sys.stderr,
+            )
+            for held_id in reset_processed_ids:
+                submit_errors.append(
+                    (held_id, "held, but the snapshot reset did not land: fix the entry by hand")
+                )
         else:
             print("  Warning: no snapshot found to update", file=sys.stderr)
 

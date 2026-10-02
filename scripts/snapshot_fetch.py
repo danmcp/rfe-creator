@@ -432,6 +432,17 @@ def write_id_file(path, ids):
             f.write(f"{id_}\n")
 
 
+def snapshot_files(snapshot_dir=None, prefix=_RFE_SNAPSHOT_PREFIX):
+    """The snapshot files in *snapshot_dir*, newest first (an empty list when none).
+
+    The one glob the writers share: submit.py asks it whether a snapshot exists
+    before reading a None from update_snapshot_hashes as "nothing to update"
+    rather than "the update failed".
+    """
+    snap_dir = snapshot_dir or SNAPSHOT_DIR
+    return sorted(glob.glob(os.path.join(snap_dir, f"{prefix}*.yaml")), reverse=True)
+
+
 def update_snapshot_hashes(
     hashes,
     snapshot_dir=None,
@@ -452,9 +463,7 @@ def update_snapshot_hashes(
     unchanged item as processed, so without the reset a held item would
     stay ``processed: true`` and the next fetch would not select it.
     """
-    snap_dir = snapshot_dir or SNAPSHOT_DIR
-    pattern = os.path.join(snap_dir, f"{prefix}*.yaml")
-    files = sorted(glob.glob(pattern), reverse=True)
+    files = snapshot_files(snapshot_dir, prefix)
 
     for f in files:
         try:

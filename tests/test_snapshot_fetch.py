@@ -357,6 +357,16 @@ class TestUpdateSnapshotHashes:
         assert issues["K3"] == {"hash": "ccc"}
         assert "K9" not in issues
 
+    def test_snapshot_files_lists_newest_first_and_empty_when_none(self, tmp_path):
+        from snapshot_fetch import snapshot_files
+
+        snap_dir, path = self._seed(tmp_path, {"K1": "aaa"})
+        older = os.path.join(snap_dir, "issue-snapshot-20260301-000000.yaml")
+        with open(older, "w") as f:
+            yaml.dump({"issues": {}}, f)
+        assert snapshot_files(snap_dir) == [path, older]
+        assert snapshot_files(str(tmp_path / "empty")) == []
+
     def test_mark_processed_skips_missing_key(self, tmp_path):
         """mark_processed with key not in snapshot → no error, no change."""
         snap_dir, path = self._seed(tmp_path, {"K1": "aaa"})
