@@ -239,6 +239,8 @@ SPLIT_CONFIG_KEYS = [
     "find_review_fn",
     "do_rebuild_index",
     "alignment_labels",
+    "approved_status",
+    "type_label",
 ]
 TYPES = split_submit._TYPES.names()
 
@@ -314,6 +316,9 @@ class TestSplitConfigProjection:
         assert config["review_schema"] == f"{desc.name}-review"
         assert config["do_rebuild_index"] is desc.get("index.enabled")
         assert config["alignment_labels"] == desc.get("conventions.labels.alignment", None)
+        # Child approval at creation (RHAIFIRST-82) reads the same values submit.py does.
+        assert config["approved_status"] == desc.get("identity.jira.state_map.approved", None)
+        assert config["type_label"] == desc.get("conventions.type_label")
 
     def test_callables_are_bound_to_the_type(self, desc, tmp_path):
         config = SPLIT_CONFIG[desc.name]

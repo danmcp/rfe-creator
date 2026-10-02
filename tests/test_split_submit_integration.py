@@ -106,10 +106,10 @@ def _setup_parent(jira, art_dir, child_ids=("RFE-001", "RFE-002")):
     return children
 
 
-def _run_split(art_dir, url):
+def _run_split(art_dir, url, *extra):
     env = {**os.environ, "JIRA_SERVER": url, "JIRA_USER": "admin", "JIRA_TOKEN": "admin"}
     return subprocess.run(
-        [sys.executable, SCRIPT, PARENT_KEY, "--artifacts-dir", art_dir],
+        [sys.executable, SCRIPT, PARENT_KEY, "--artifacts-dir", art_dir, *extra],
         capture_output=True,
         text=True,
         env=env,
@@ -841,3 +841,127 @@ class TestParentBindingIsVerifiedBeforeAnyWrite:
         assert r.returncode == 0, r.stderr + r.stdout
         assert r.stderr == ""
         assert len(_search_keys(jira.url, "labels = rfe-creator-split-result")) == 2
+
+
+CHILD_REVIEW = """\
+---
+rfe_id: {child_id}
+score: 9
+pass: true
+recommendation: submit
+feasibility: {feasibility}
+auto_revised: false
+needs_attention: false
+scores:
+  what: 2
+  why: 2
+  open_to_how: 2
+  not_a_task: 2
+  right_sized: 1
+---
+"""
+
+
+def _approval_comments(url, key):
+    return [
+        c
+        for c in get_comments(url, "admin", "admin", key)
+        if "automatically transitioned to Approved" in json.dumps(c.get("body", {}))
+    ]
+
+
+def _status(url, key):
+    return get_issue(url, "admin", "admin", key, ["status"])["fields"]["status"]["name"]
+
+
+class TestAutoApproveChildren:
+    """RHAIFIRST-82: a child whose review is a feasible rubric pass is approved at
+    creation under --auto-approve, with the same comment submit.py posts; without the
+    flag, or when the gate fails, it stays as created. Children used to be left in New
+    with their rubric-pass label, which excludes them from every later run."""
+
+    def _setup(self, jira, art_dir):
+        children = _setup_parent(jira, art_dir, child_ids=("RFE-001", "RFE-002"))
+        _write(
+            f"{art_dir}/rfe-reviews/RFE-001-review.md",
+            CHILD_REVIEW.format(child_id="RFE-001", feasibility="feasible"),
+        )
+        _write(
+            f"{art_dir}/rfe-reviews/RFE-002-review.md",
+            CHILD_REVIEW.format(child_id="RFE-002", feasibility="indeterminate"),
+        )
+        return children
+
+    def test_qualifying_child_is_approved_and_commented(self, art_dir, jira):
+        self._setup(jira, art_dir)
+        m1, m2 = _marker_for(art_dir, "RFE-001"), _marker_for(art_dir, "RFE-002")
+        r = _run_split(art_dir, jira.url, "--auto-approve")
+        assert r.returncode == 0, r.stderr + r.stdout
+        (k1,) = _search_keys(jira.url, f'labels = "{m1}"')
+        (k2,) = _search_keys(jira.url, f'labels = "{m2}"')
+        assert _status(jira.url, k1) == "Approved"
+        assert len(_approval_comments(jira.url, k1)) == 1
+        assert f"Transitioned {k1} to Approved" in r.stdout
+        # An indeterminate verdict is not a basis for approval: the gate is submit.py's.
+        assert _status(jira.url, k2) != "Approved"
+        assert _approval_comments(jira.url, k2) == []
+        # The split transaction itself is untouched: the parent is still closed.
+        issue = get_issue(jira.url, "admin", "admin", PARENT_KEY, ["status"])
+        assert issue["fields"]["status"]["statusCategory"]["key"] == "done"
+
+    def test_without_the_flag_children_are_not_transitioned(self, art_dir, jira):
+        self._setup(jira, art_dir)
+        m1 = _marker_for(art_dir, "RFE-001")
+        r = _run_split(art_dir, jira.url)
+        assert r.returncode == 0, r.stderr + r.stdout
+        (k1,) = _search_keys(jira.url, f'labels = "{m1}"')
+        assert _status(jira.url, k1) != "Approved"
+        assert _approval_comments(jira.url, k1) == []
+        assert f"Transitioned {k1}" not in r.stdout
+
+    def test_recovery_run_does_not_approve_twice(self, art_dir, jira):
+        """A run that dies after approving a child is resumed by the next one: the child
+        is adopted as created and its approval is checked, not repeated."""
+        children = self._setup(jira, art_dir)
+        config = SPLIT_CONFIG["rfe"]
+        state = discover_state(jira.url, "admin", "admin", PARENT_KEY, children, config)
+        phase1_persist(jira.url, "admin", "admin", PARENT_KEY, children, state, config, False)
+        phase2_create_link(
+            jira.url,
+            "admin",
+            "admin",
+            PARENT_KEY,
+            children,
+            state,
+            art_dir,
+            config,
+            False,
+            auto_approve=True,
+        )
+        k1 = state.phase2_done["RFE-001"]["key"]
+        assert _status(jira.url, k1) == "Approved"
+        assert len(_approval_comments(jira.url, k1)) == 1
+
+        resumed = discover_state(jira.url, "admin", "admin", PARENT_KEY, children, config)
+        assert resumed.phase2_done["RFE-001"]["key"] == k1
+        phase2_create_link(
+            jira.url,
+            "admin",
+            "admin",
+            PARENT_KEY,
+            children,
+            resumed,
+            art_dir,
+            config,
+            False,
+            auto_approve=True,
+        )
+        assert len(_approval_comments(jira.url, k1)) == 1
+
+    def test_dry_run_reports_the_approval_and_writes_nothing(self, art_dir, jira):
+        self._setup(jira, art_dir)
+        r = _run_split(art_dir, jira.url, "--dry-run", "--auto-approve")
+        assert r.returncode == 0, r.stderr + r.stdout
+        assert "Would transition the new child for RFE-001 to Approved" in r.stdout
+        assert "Would transition the new child for RFE-002" not in r.stdout
+        assert _search_keys(jira.url, "labels = rfe-creator-split-result") == []
