@@ -88,6 +88,11 @@ SPLIT_FAILED_PREFIX = "split_submit_failed:"
 # attempted in Jira, but counting them as successful splits would report an
 # abort as an outcome.
 SPLIT_NOT_ATTEMPTED_PREFIX = "split_not_attempted:"
+# submit.py held an existing item whose body changed while its review never recorded
+# auto_revised (an interrupted revision, reference §5.12): nothing was published and the
+# item stays unprocessed for the next run. Reported as blocked, like a refused split, so
+# bootstrap_snapshot agrees with the live snapshot (RHAIFIRST-571).
+REVISION_INTERRUPTED_PREFIX = "revision_interrupted:"
 
 
 def split_children_map(artifacts_dir, config, tasks=None):
@@ -369,7 +374,7 @@ def build_report(
         review_error = data.get("error") or ""
         blocked_reason = None
         failed_reason = None
-        if review_error.startswith(SPLIT_REFUSED_PREFIX):
+        if review_error.startswith((SPLIT_REFUSED_PREFIX, REVISION_INTERRUPTED_PREFIX)):
             blocked_reason = data.get("needs_attention_reason") or review_error
             entry["blocked_reason"] = blocked_reason
         elif review_error.startswith((SPLIT_FAILED_PREFIX, SPLIT_NOT_ATTEMPTED_PREFIX)):

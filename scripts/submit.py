@@ -53,7 +53,11 @@ from artifact_utils import (  # noqa: E402
     scan_tasks,
     update_frontmatter,
 )
-from generate_run_report import SPLIT_NOT_ATTEMPTED_PREFIX, _parse_run_id  # noqa: E402
+from generate_run_report import (  # noqa: E402
+    REVISION_INTERRUPTED_PREFIX,
+    SPLIT_NOT_ATTEMPTED_PREFIX,
+    _parse_run_id,
+)
 from generate_run_report import TYPE_CONFIG as REPORT_TYPE_CONFIG  # noqa: E402
 from jira_utils import (  # noqa: E402
     add_comment,
@@ -71,7 +75,11 @@ from jira_utils import (  # noqa: E402
     transition_issue,
     update_issue,
 )
-from snapshot_fetch import compute_content_hash, update_snapshot_hashes  # noqa: E402
+from snapshot_fetch import (  # noqa: E402
+    compute_content_hash,
+    snapshot_files,
+    update_snapshot_hashes,
+)
 
 # ─── Type Configurations ─────────────────────────────────────────────────────
 
@@ -567,7 +575,7 @@ def _post_needs_attention_comment(server, user, token, entry, results, dry_run, 
 
     original_labels = entry.get("original_labels") or []
     needs_attn_label = f"{cfg['label_prefix']}-needs-attention"
-    if needs_attn_label in original_labels:
+    if needs_attn_label in original_labels and not entry.get("attn_force"):
         return
 
     item_id = entry[cfg["id_field"]]
@@ -1292,6 +1300,7 @@ def main():
                 continue
 
         # For existing items, check if content has changed
+        body_changed = False  # evidence of a rewrite: an original on disk that differs
         if is_existing:
             original_path = os.path.join(args.artifacts_dir, cfg["originals_dir"], f"{item_id}.md")
             if os.path.exists(original_path):
@@ -1299,7 +1308,8 @@ def main():
                     original_body = strip_metadata(f.read())
                 with open(task_path, encoding="utf-8") as f:
                     current_body = strip_metadata(f.read())
-                if original_body.strip() == current_body.strip():
+                body_changed = original_body.strip() != current_body.strip()
+                if not body_changed:
                     no_change_labels = _build_labels(
                         item_id, review_data, is_existing, rec, original_labels
                     )
@@ -1332,6 +1342,112 @@ def main():
                         }
                     )
                     continue
+
+        # An interrupted revision (the 2026-09-29 03:12 UTC run): the body of an existing
+        # item changed but its review never recorded auto_revised. The revise agent sets
+        # that flag as its LAST action (AISDLC-50), so a changed body without it never
+        # reached REASSESS -- the pipeline stopped between the rewrite and the re-review.
+        # The automation (--auto-approve) must not publish an unreviewed rewrite: hold the
+        # description, flag the item for a human, and say why. An interactive submit keeps
+        # the update path: a human editing the task file before /rfe-submit is a manual
+        # revision and carries no flag either.
+        if (
+            args.auto_approve
+            and is_existing
+            and body_changed
+            and review_data
+            and not review_data.get("auto_revised", False)
+        ):
+            # A submit re-run over artifacts a previous submit already held (the manual
+            # submit jobs) holds again, idempotently: the labels are re-applied, the review
+            # is left as recorded and the comment is not posted a second time.
+            already_held = str(review_data.get("error") or "").startswith(
+                REVISION_INTERRUPTED_PREFIX
+            )
+            reason = (
+                "Revision interrupted: the task body changed but the review never recorded "
+                "auto_revised, so the rewrite was not re-reviewed. The description was left "
+                "as it was; re-run the pipeline on this item or review the local revision by hand."
+            )
+            review_path = _find_review(args.artifacts_dir, item_id, cfg)
+            # The planning path runs under --dry-run too: record the hold on the review
+            # only when the run is real (CodeRabbit on #210). `pass: false` is what makes
+            # the next run redo the item: an unprocessed id whose Jira content did not
+            # change is selected as *new*, and check_resume skips a new id whose local
+            # review (restored from the results repository) still passes with no error.
+            # The review's pass was given on the body before the rewrite anyway.
+            if review_path and not args.dry_run and not already_held:
+                try:
+                    update_frontmatter(
+                        review_path,
+                        {
+                            "pass": False,
+                            # The run report maps this prefix to blocked_reason, which
+                            # bootstrap_snapshot reads as not processed, as the live
+                            # snapshot says (RHAIFIRST-571).
+                            "error": f"{REVISION_INTERRUPTED_PREFIX} auto_revised never recorded",
+                            "needs_attention": True,
+                            "needs_attention_reason": reason,
+                        },
+                        cfg["review_schema"],
+                    )
+                except Exception as e:
+                    # A hold that is not on disk is no hold: the next run would skip the
+                    # item on its still-passing review and nothing would ever redo it
+                    # (CodeRabbit on #210). Stop before any Jira write of this plan, through
+                    # _finish, so the splits Phase 1 already committed still reach the
+                    # run report.
+                    print(
+                        f"Error: could not record the interrupted revision on {item_id}'s "
+                        f"review ({e}); not submitting.",
+                        file=sys.stderr,
+                    )
+                    submit_errors.append(
+                        (item_id, f"interrupted-revision hold could not be recorded: {e}")
+                    )
+                    _finish(args, type_name, type_label, submit_errors)
+            review_data["pass"] = False
+            review_data["needs_attention"] = True
+            review_data["needs_attention_reason"] = reason
+            # The review's verdicts were given on the body before the rewrite, so they
+            # say nothing about the body in the task file now: the held entry carries the
+            # needs-attention label only, no verdict labels, and the rubric-pass and
+            # feasibility verdict labels the item already has come off until the re-run
+            # reviews the current text.
+            held_labels = [f"{cfg['label_prefix']}-needs-attention"]
+            stale_verdict_labels = [cfg["rubric_pass_label"]] + list(
+                cfg["feasibility_labels"].values()
+            )
+            held_remove = [
+                label for label in stale_verdict_labels if label and label in original_labels
+            ]
+            plan.append(
+                {
+                    id_field: item_id,
+                    "title": title,
+                    "is_existing": is_existing,
+                    "priority": priority,
+                    "size": size,
+                    "action": "Label only",
+                    "labels": held_labels,
+                    "remove_labels": held_remove,
+                    "skip_reason": None,
+                    "note": "revision interrupted (auto_revised false): description not published",
+                    "task_path": task_path,
+                    "jira_key": jira_key,
+                    # Posted once per hold, and also when the item already carried the
+                    # needs-attention label at fetch: the reason (nothing published) is new.
+                    "attn_reason": None if already_held else reason,
+                    "attn_force": not already_held,
+                    "original_labels": original_labels,
+                    "auto_approve": False,
+                    "jira_status": jira_status,
+                    # Not disposed of: the next scheduled run must pick the item up
+                    # again and redo the revision properly (fetch invariant 7).
+                    "leave_unprocessed": True,
+                }
+            )
+            continue
 
         labels = _build_labels(item_id, review_data, is_existing, rec, original_labels)
         feas_remove = []
@@ -1379,6 +1495,8 @@ def main():
             print(f"{'':>16} Remove: {', '.join(entry['remove_labels'])}")
         if entry["skip_reason"]:
             print(f"{'':>16} Reason: {entry['skip_reason']}")
+        if entry.get("note"):
+            print(f"{'':>16} Note: {entry['note']}")
     print()
 
     approve_comment = approval_comment(cfg["comment_prefix"], type_label, approved_status)
@@ -1402,6 +1520,7 @@ def main():
     results = {}
     submitted_hashes = {}
     mark_processed_ids = []
+    reset_processed_ids = []  # held entries: not disposed of, selected again next run
     for entry in plan:
         item_id = entry[id_field]
         jira_key = entry.get("jira_key") or item_id
@@ -1440,15 +1559,23 @@ def main():
                             print(f"  {item_id}: Removed labels: {', '.join(remove)}")
                         if labels:
                             print(f"  {item_id}: Labels: {', '.join(labels)}")
-                    update_frontmatter(
-                        entry["task_path"], {"status": "Submitted"}, cfg["task_schema"]
-                    )
+                    # A held entry published nothing: its task keeps its status so a
+                    # re-run of submit on the same artifacts holds it again instead of
+                    # skipping it as submitted, and its snapshot entry is reset to
+                    # unprocessed (a --reprocess fetch writes it as processed).
+                    if entry.get("leave_unprocessed"):
+                        reset_processed_ids.append(item_id)
+                    else:
+                        update_frontmatter(
+                            entry["task_path"], {"status": "Submitted"}, cfg["task_schema"]
+                        )
                 results[item_id] = jira_key
                 _post_needs_attention_comment(
                     server, user, token, entry, results, args.dry_run, cfg
                 )
                 _maybe_approve(item_id, jira_key, entry)
-                mark_processed_ids.append(item_id)
+                if not entry.get("leave_unprocessed"):
+                    mark_processed_ids.append(item_id)
                 continue
 
             # Read and clean artifact content
@@ -1573,18 +1700,36 @@ def main():
     print()
 
     # Update snapshot
-    if (submitted_hashes or mark_processed_ids) and not args.dry_run:
+    if (submitted_hashes or mark_processed_ids or reset_processed_ids) and not args.dry_run:
         snap_dir = os.path.join(args.artifacts_dir, "auto-fix-runs")
-        snap_kwargs = {"mark_processed": mark_processed_ids}
+        snap_kwargs = {"mark_processed": mark_processed_ids, "reset_processed": reset_processed_ids}
         if cfg["snapshot_prefix"]:
             snap_kwargs["prefix"] = cfg["snapshot_prefix"]
         updated = update_snapshot_hashes(submitted_hashes, snap_dir, **snap_kwargs)
         if updated:
+            held = f", {len(reset_processed_ids)} held" if reset_processed_ids else ""
             print(
                 f"  Updated snapshot with {len(submitted_hashes)} "
                 f"post-submit hashes, {len(mark_processed_ids)} "
-                f"mark-processed: {updated}"
+                f"mark-processed{held}: {updated}"
             )
+        elif reset_processed_ids and snapshot_files(
+            snap_dir, **({"prefix": snap_kwargs["prefix"]} if "prefix" in snap_kwargs else {})
+        ):
+            # A snapshot exists and the reset did not land: a held item that entered
+            # processed: true stays so, and no later fetch would select it (CodeRabbit
+            # on #210). Say so and end the run red through _finish; the hold itself
+            # (labels, comment, review) stands.
+            print(
+                "Error: the snapshot could not be updated after holding "
+                f"{', '.join(reset_processed_ids)}; a held item may stay processed and "
+                "the next fetch would not select it. Reset its snapshot entry by hand.",
+                file=sys.stderr,
+            )
+            for held_id in reset_processed_ids:
+                submit_errors.append(
+                    (held_id, "held, but the snapshot reset did not land: fix the entry by hand")
+                )
         else:
             print("  Warning: no snapshot found to update", file=sys.stderr)
 

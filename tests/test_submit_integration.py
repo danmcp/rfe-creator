@@ -456,6 +456,303 @@ class TestFeasibilityLabelExecutor:
         assert "rfe-creator-feasibility-fail" not in issue["fields"]["labels"]
 
 
+class TestInterruptedRevisionHold:
+    """An existing item whose body changed while its review still says
+    ``auto_revised: false`` is an interrupted revision (the revise agent sets that flag
+    as its last action, AISDLC-50). Under --auto-approve the rewrite is held, not
+    published; an interactive submit keeps the update path."""
+
+    ORIGINAL = "## Problem\n\nOriginal content.\n"
+    REWRITE = "## Problem\n\nRewritten by the revise agent, never re-reviewed.\n"
+
+    @staticmethod
+    def _desc_text(issue):
+        desc = issue["fields"]["description"]
+        if isinstance(desc, dict):
+            texts = []
+            for node in desc.get("content", []):
+                for child in node.get("content", []):
+                    if child.get("type") == "text":
+                        texts.append(child["text"])
+            return "\n".join(texts)
+        return desc or ""
+
+    def _seed(self, art_dir, jira, auto_revised, original_labels=(), with_original=True):
+        jira.create("RHAIRFE-1234", "Test RFE", self.ORIGINAL)
+        if with_original:
+            _write(f"{art_dir}/rfe-originals/RHAIRFE-1234.md", self.ORIGINAL)
+        # original_labels is what FETCH recorded from Jira; the plan reads it from the task.
+        labels_fm = (
+            "original_labels:\n" + "".join(f"- {label}\n" for label in original_labels)
+            if original_labels
+            else ""
+        )
+        _write(
+            f"{art_dir}/rfe-tasks/RHAIRFE-1234.md",
+            "---\nrfe_id: RHAIRFE-1234\ntitle: Test RFE\npriority: Major\nstatus: Ready\n"
+            f"{labels_fm}---\n{self.REWRITE}",
+        )
+        _write(
+            f"{art_dir}/rfe-reviews/RHAIRFE-1234-review.md",
+            _review("RHAIRFE-1234", auto_revised=auto_revised),
+        )
+
+    @staticmethod
+    def _attention_comments(jira):
+        comments = jira.request("GET", "/rest/api/3/issue/RHAIRFE-1234/comment")["comments"]
+        return [c for c in comments if "Revision interrupted" in json.dumps(c["body"])]
+
+    def test_auto_approve_holds_an_interrupted_revision(self, art_dir, jira):
+        self._seed(art_dir, jira, auto_revised="false")
+
+        r = _run_submit(
+            art_dir,
+            jira.url,
+            ["--auto-approve", "--generate-report", "--report-timestamp", "20261002-190000"],
+        )
+        assert r.returncode == 0, r.stderr
+        assert "revision interrupted" in r.stdout
+        assert "RHAIRFE-1234: Updated" not in r.stdout
+        assert "Transitioned to Approved" not in r.stdout
+
+        issue = jira.get("RHAIRFE-1234")
+        assert "Original content." in self._desc_text(issue)
+        assert "Rewritten" not in self._desc_text(issue)
+        assert "rfe-creator-needs-attention" in issue["fields"]["labels"]
+        assert "rfe-creator-auto-revised" not in issue["fields"]["labels"]
+        comments = jira.request("GET", "/rest/api/3/issue/RHAIRFE-1234/comment")
+        assert comments["total"] >= 1
+        fm = _read_frontmatter(f"{art_dir}/rfe-reviews/RHAIRFE-1234-review.md")
+        assert fm["needs_attention"] is True
+        assert "Revision interrupted" in fm["needs_attention_reason"]
+        assert fm["pass"] is False
+        assert fm["error"].startswith("revision_interrupted:")
+        # The run report shows the hold as blocked (not disposed of), which is what
+        # bootstrap_snapshot reads as unprocessed, like the live snapshot says.
+        with open(f"{art_dir}/auto-fix-runs/20261002-190000.yaml") as fh:
+            report = yaml.safe_load(fh)
+        (entry,) = [e for e in report["per_rfe"] if e["id"] == "RHAIRFE-1234"]
+        assert "Revision interrupted" in entry["blocked_reason"]
+        assert report["results"]["blocked"] == 1
+
+    def test_hold_needs_evidence_of_a_rewrite(self, art_dir, jira):
+        """Without an original on disk nothing shows the body changed: the item takes
+        the update path as before instead of being held on a guess."""
+        self._seed(art_dir, jira, auto_revised="false", with_original=False)
+        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        assert r.returncode == 0, r.stderr
+        assert "revision interrupted" not in r.stdout
+        assert "RHAIRFE-1234: Updated" in r.stdout
+
+    def test_rerun_over_held_artifacts_holds_again_without_a_second_comment(self, art_dir, jira):
+        """The manual submit jobs re-run submit over the same artifacts: the hold is
+        idempotent, the labels are re-applied, the comment is posted once."""
+        self._seed(art_dir, jira, auto_revised="false")
+        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        assert r.returncode == 0, r.stderr
+        assert len(self._attention_comments(jira)) == 1
+        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        assert r.returncode == 0, r.stderr
+        assert "revision interrupted" in r.stdout
+        assert len(self._attention_comments(jira)) == 1
+        issue = jira.get("RHAIRFE-1234")
+        assert "rfe-creator-needs-attention" in issue["fields"]["labels"]
+        assert "Original content." in self._desc_text(issue)
+
+    def test_hold_comment_is_posted_even_when_already_flagged(self, art_dir, jira):
+        """An item that already carried the needs-attention label at fetch still gets
+        the hold's comment: that nothing was published is new information."""
+        self._seed(
+            art_dir, jira, auto_revised="false", original_labels=("rfe-creator-needs-attention",)
+        )
+        jira.request(
+            "PUT",
+            "/rest/api/3/issue/RHAIRFE-1234",
+            {"fields": {"labels": ["rfe-creator-needs-attention"]}},
+        )
+        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        assert r.returncode == 0, r.stderr
+        assert len(self._attention_comments(jira)) == 1
+
+    def test_held_item_is_processed_again_by_the_next_run(self, art_dir, jira):
+        """CodeRabbit on #210: an unprocessed id with unchanged Jira content is selected
+        as *new*, and check_resume skips a new id whose restored local review still
+        passes with no error; the hold therefore persists pass: false, so the next run
+        re-fetches and re-reviews the item instead of holding it forever."""
+        self._seed(art_dir, jira, auto_revised="false")
+        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        assert r.returncode == 0, r.stderr
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+        import check_resume
+
+        process_ids, skip_ids = check_resume.check_resume(["RHAIRFE-1234"], [], art_dir)
+        assert process_ids == ["RHAIRFE-1234"] and skip_ids == []
+
+    def test_hold_that_cannot_be_recorded_stops_the_run(self, art_dir, jira, monkeypatch, capsys):
+        """CodeRabbit on #210: a hold that is not on disk is no hold (the next run would
+        skip the item on its still-passing review), so a failed review write ends the
+        submit through _finish, before any Jira write of the plan and with the run
+        report still generated. The failure is injected into submit's bound writer, so
+        the test does not depend on file permissions (a root test run ignores chmod)."""
+        self._seed(art_dir, jira, auto_revised="false")
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+        import submit as submit_mod
+
+        real_update = submit_mod.update_frontmatter
+
+        def failing_review_write(path, *a, **k):
+            if str(path).endswith("-review.md"):
+                raise OSError("disk full")
+            return real_update(path, *a, **k)
+
+        monkeypatch.setattr(submit_mod, "update_frontmatter", failing_review_write)
+        monkeypatch.setenv("JIRA_SERVER", jira.url)
+        monkeypatch.setenv("JIRA_USER", "admin")
+        monkeypatch.setenv("JIRA_TOKEN", "admin")
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "submit.py",
+                "--artifacts-dir",
+                art_dir,
+                "--auto-approve",
+                "--generate-report",
+                "--report-timestamp",
+                "20261002-180000",
+            ],
+        )
+        with pytest.raises(SystemExit) as exc:
+            submit_mod.main()
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "could not record the interrupted revision" in err
+        assert "failed during submit" in err  # _finish's summary: the run ended through it
+        assert os.path.exists(f"{art_dir}/auto-fix-runs/20261002-180000.yaml")
+        review = f"{art_dir}/rfe-reviews/RHAIRFE-1234-review.md"
+        assert _read_frontmatter(review)["pass"] is True
+        issue = jira.get("RHAIRFE-1234")
+        assert issue["fields"]["labels"] == []
+        assert "Original content." in self._desc_text(issue)
+
+    def test_hold_whose_snapshot_reset_fails_ends_the_run_red(
+        self, art_dir, jira, monkeypatch, capsys
+    ):
+        """CodeRabbit on #210: a snapshot that exists but could not be updated leaves a
+        held item processed: true and no later fetch would select it. The hold itself
+        stands; the run ends red through _finish naming the item. Without any snapshot
+        the hold is a normal success (every id is new to the next fetch)."""
+        self._seed(art_dir, jira, auto_revised="false")
+        snap_dir = os.path.join(art_dir, "auto-fix-runs")
+        os.makedirs(snap_dir, exist_ok=True)
+        with open(os.path.join(snap_dir, "issue-snapshot-20260929-000000.yaml"), "w") as f:
+            yaml.dump({"issues": {"RHAIRFE-1234": {"processed": True, "hash": "abc"}}}, f)
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+        import submit as submit_mod
+
+        monkeypatch.setattr(submit_mod, "update_snapshot_hashes", lambda *a, **k: None)
+        monkeypatch.setenv("JIRA_SERVER", jira.url)
+        monkeypatch.setenv("JIRA_USER", "admin")
+        monkeypatch.setenv("JIRA_TOKEN", "admin")
+        monkeypatch.setattr(
+            sys, "argv", ["submit.py", "--artifacts-dir", art_dir, "--auto-approve"]
+        )
+        with pytest.raises(SystemExit) as exc:
+            submit_mod.main()
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "snapshot could not be updated after holding RHAIRFE-1234" in err
+        assert "failed during submit" in err
+        # the hold itself landed
+        issue = jira.get("RHAIRFE-1234")
+        assert "rfe-creator-needs-attention" in issue["fields"]["labels"]
+        assert "Original content." in self._desc_text(issue)
+
+    def test_dry_run_hold_writes_nothing(self, art_dir, jira):
+        """CodeRabbit on #210: the planning path runs under --dry-run too, so the hold
+        must be reported without touching the review, the task or Jira."""
+        self._seed(art_dir, jira, auto_revised="false")
+        r = _run_submit(art_dir, jira.url, ["--auto-approve", "--dry-run"])
+        assert r.returncode == 0, r.stderr
+        assert "revision interrupted" in r.stdout
+        fm = _read_frontmatter(f"{art_dir}/rfe-reviews/RHAIRFE-1234-review.md")
+        assert fm["needs_attention"] is False
+        assert fm["pass"] is True
+        assert "needs_attention_reason" not in fm
+        assert _read_frontmatter(f"{art_dir}/rfe-tasks/RHAIRFE-1234.md")["status"] == "Ready"
+        issue = jira.get("RHAIRFE-1234")
+        assert issue["fields"]["labels"] == []
+        assert "Original content." in self._desc_text(issue)
+
+    def test_held_task_keeps_its_status_and_gets_no_verdict_labels(self, art_dir, jira):
+        """CodeRabbit on #210: nothing was published, so the task is not marked
+        Submitted (a re-run of submit on the same artifacts holds it again rather than
+        skipping it), and the review's verdicts, given on the body before the rewrite,
+        put no pass labels on the current text: the needs-attention label only, and the
+        existing rubric-pass and feasibility verdict labels come off until the re-run
+        reviews the new body."""
+        seeded = ("rfe-creator-autofix-rubric-pass", "rfe-creator-feasibility-pass", "keep-me")
+        self._seed(art_dir, jira, auto_revised="false", original_labels=seeded)
+        jira.request(
+            "PUT",
+            "/rest/api/3/issue/RHAIRFE-1234",
+            {"fields": {"labels": list(seeded)}},
+        )
+        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        assert r.returncode == 0, r.stderr
+        assert _read_frontmatter(f"{art_dir}/rfe-tasks/RHAIRFE-1234.md")["status"] == "Ready"
+        labels = set(jira.get("RHAIRFE-1234")["fields"]["labels"])
+        assert "rfe-creator-needs-attention" in labels
+        assert "keep-me" in labels
+        assert "rfe-creator-autofix-rubric-pass" not in labels
+        assert not any(label.startswith("rfe-creator-feasibility-") for label in labels)
+
+    @pytest.mark.parametrize("processed_at_fetch", [False, True])
+    def test_held_item_stays_unprocessed_for_the_next_run(self, art_dir, jira, processed_at_fetch):
+        """The hold is not a disposal: the next scheduled run must pick the item up
+        again and redo the revision properly, so the snapshot ends processed: false.
+        A --reprocess fetch writes a selected unchanged item as processed: true, so the
+        hold resets the flag rather than merely not setting it (CodeRabbit on #210)."""
+        self._seed(art_dir, jira, auto_revised="false")
+        snap_dir = os.path.join(art_dir, "auto-fix-runs")
+        os.makedirs(snap_dir, exist_ok=True)
+        snap_path = os.path.join(snap_dir, "issue-snapshot-20260929-000000.yaml")
+        with open(snap_path, "w") as f:
+            yaml.dump(
+                {
+                    "query_timestamp": "2026-09-29T00:00:00Z",
+                    "timestamp": "2026-09-29T00:00:01Z",
+                    "issues": {"RHAIRFE-1234": {"processed": processed_at_fetch, "hash": "abc"}},
+                },
+                f,
+            )
+
+        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        assert r.returncode == 0, r.stderr
+        with open(snap_path) as f:
+            snap = yaml.safe_load(f)
+        assert snap["issues"]["RHAIRFE-1234"]["processed"] is False
+
+    def test_interactive_submit_still_updates(self, art_dir, jira):
+        """No --auto-approve: a human editing the task file is a manual revision."""
+        self._seed(art_dir, jira, auto_revised="false")
+
+        r = _run_submit(art_dir, jira.url)
+        assert r.returncode == 0, r.stderr
+        assert "RHAIRFE-1234: Updated" in r.stdout
+        assert "Rewritten" in self._desc_text(jira.get("RHAIRFE-1234"))
+
+    def test_completed_revision_is_published_under_auto_approve(self, art_dir, jira):
+        self._seed(art_dir, jira, auto_revised="true")
+
+        r = _run_submit(art_dir, jira.url, ["--auto-approve"])
+        assert r.returncode == 0, r.stderr
+        assert "RHAIRFE-1234: Updated" in r.stdout
+        issue = jira.get("RHAIRFE-1234")
+        assert "Rewritten" in self._desc_text(issue)
+        assert "rfe-creator-auto-revised" in issue["fields"]["labels"]
+
+
 class TestConflictDetection:
     def test_conflict_prevents_update(self, art_dir, jira):
         """Jira description differs from original → skip, no PUT."""

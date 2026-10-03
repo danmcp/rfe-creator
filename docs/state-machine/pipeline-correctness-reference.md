@@ -1027,6 +1027,44 @@ could disagree with the submission pipeline's content comparison.
 
 ---
 
+### 5.12 Interrupted revisions at submit
+
+The revise agent sets `auto_revised: true` as its last action (AISDLC-50), so an existing
+item whose task body differs from its original while the review still says
+`auto_revised: false` is a revision the pipeline stopped between the rewrite and the
+re-review — the 2026-09-29 03:12 UTC shape, where the run ended right after an
+auto-compaction and the post-agent submit pushed the unreviewed text to RHAIRFE-3520.
+Under `--auto-approve` (the automation's mode) `submit.py` now holds such an item: the
+description is not updated, the review gets `needs_attention: true` with a reason that
+names the interruption, the plan entry runs as `Label only` (the needs-attention label
+and comment, no approval, no verdict labels, and the existing rubric-pass and feasibility
+verdict labels removed because the review's verdicts were given on the body before the
+rewrite), the task keeps
+its status (nothing was published, so a re-run of submit on the same artifacts holds it
+again instead of skipping it as submitted), and the item is left **unprocessed** in the
+snapshot: not merely unmarked but reset, because a `--reprocess` fetch records a selected
+unchanged item as `processed: true` and the next fetch would otherwise not select it (a
+snapshot that exists but could not be updated after a hold ends the run red, naming the
+item, since nothing else would ever select it again). The retry needs one more thing: `snapshot_fetch.diff_snapshots` selects an
+unprocessed id whose Jira content did not change as *new*, not *changed*, and
+`check_resume` skips a new id whose local review (restored from the results repository)
+still says `pass: true` with no `error`. The hold therefore also writes `pass: false` and
+`error: revision_interrupted: …` on the review, next to the reason, so the next run
+re-fetches the issue, re-reviews it and redoes the revision properly instead of holding it
+again. The run report maps that error prefix to `blocked_reason` and counts the item as
+blocked, which is what `bootstrap_snapshot` reads as not processed, so a snapshot rebuilt
+from the reports agrees with the live one (RHAIFIRST-571). The hold needs evidence of a
+rewrite: an original on disk that differs from the task body; without an original the
+item takes the update path as before. A submit re-run over already-held artifacts (the
+manual submit jobs) holds again idempotently, re-applying the labels without a second
+comment, and the comment is posted even when the item already carried the needs-attention
+label at fetch. Under `--dry-run` the hold is reported and nothing is written. Known
+limit: the hold keys on `auto_revised`, which `REASSESS_RESTORE` restores to `true` before
+`REASSESS_REVISE`, so a run that dies inside a *second* revision pass is not detected; the
+durable fix is a per-wave revision marker set by the pipeline (follow-up). An interactive
+submit (no `--auto-approve`) keeps the update path: a human who edits the task file
+before `/rfe-submit` is making a manual revision and carries no flag either.
+
 ## 6. Cross-References
 
 ### 6.1 Cross-Concern Stitching: Orchestration to Agent Internals

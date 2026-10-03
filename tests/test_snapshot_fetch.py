@@ -340,6 +340,33 @@ class TestUpdateSnapshotHashes:
             data = yaml.safe_load(f)
         assert data["issues"]["K1"] == {"hash": "aaa", "processed": True}
 
+    def test_reset_processed_clears_the_flag(self, tmp_path):
+        """A held item (submit.py's interrupted-revision hold) is reset to unprocessed
+        whatever the fetch wrote: a --reprocess fetch records a selected unchanged
+        item as processed, and the next fetch would otherwise not select it."""
+        snap_dir, path = self._seed(
+            tmp_path,
+            {"K1": {"hash": "aaa", "processed": True}, "K2": "bbb", "K3": {"hash": "ccc"}},
+        )
+        result = update_snapshot_hashes({}, snap_dir, reset_processed=["K1", "K2", "K9"])
+        assert result is not None
+        with open(path) as fh:
+            issues = yaml.safe_load(fh)["issues"]
+        assert issues["K1"] == {"hash": "aaa", "processed": False}
+        assert issues["K2"] == {"hash": "bbb", "processed": False}
+        assert issues["K3"] == {"hash": "ccc"}
+        assert "K9" not in issues
+
+    def test_snapshot_files_lists_newest_first_and_empty_when_none(self, tmp_path):
+        from snapshot_fetch import snapshot_files
+
+        snap_dir, path = self._seed(tmp_path, {"K1": "aaa"})
+        older = os.path.join(snap_dir, "issue-snapshot-20260301-000000.yaml")
+        with open(older, "w") as f:
+            yaml.dump({"issues": {}}, f)
+        assert snapshot_files(snap_dir) == [path, older]
+        assert snapshot_files(str(tmp_path / "empty")) == []
+
     def test_mark_processed_skips_missing_key(self, tmp_path):
         """mark_processed with key not in snapshot → no error, no change."""
         snap_dir, path = self._seed(tmp_path, {"K1": "aaa"})
