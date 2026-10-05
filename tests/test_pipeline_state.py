@@ -120,6 +120,16 @@ class TestInit:
         # pipeline-all-ids.txt must survive (needed for --reprocess)
         assert os.path.exists("tmp/pipeline-all-ids.txt")
 
+    def test_cleans_the_previous_runs_resume_output(self, tmp_dir):
+        """init removes tmp/pipeline-process-ids.txt: BATCH_START reads it to tell an idle
+        run from a forgotten `set total_batches`, and a previous run's ids in it would be
+        misnamed as this run's pending ids (interactive use shares tmp/)."""
+        write_ids("tmp/pipeline-process-ids.txt", ["RHAIRFE-1001"])
+        write_ids("tmp/pipeline-all-ids.txt", ["RHAIRFE-1001"])
+        ps.cmd_init(["--type", "rfe"])
+        assert not os.path.exists("tmp/pipeline-process-ids.txt")
+        assert os.path.exists("tmp/pipeline-all-ids.txt")
+
     def test_cleans_stale_dispatch_marker(self, tmp_dir):
         """init removes dispatch marker from prior run."""
         os.makedirs("tmp", exist_ok=True)
@@ -354,6 +364,156 @@ class TestBatchStart:
         state = make_state(phase="BATCH_START", batch=0)
         ps.advance(state)
         assert read_ids("tmp/pipeline-active-ids.txt") == ["RHAIRFE-7", "RHAIRFE-8", "RHAIRFE-9"]
+
+    # The idle run: JQL mode selected nothing (nothing new or changed since the last run),
+    # so the orchestrator wrote no batch file and set total_batches=0. Production
+    # 2026-10-04 15:21 and 2026-10-05 03:07 crashed here (FileNotFoundError on
+    # tmp/pipeline-batch-1-ids.txt) and the orchestrator improvised `set-phase DONE`.
+
+    def test_no_batches_routes_to_done_and_announces(self, tmp_dir, monkeypatch):
+        write_ids("tmp/pipeline-process-ids.txt", [])  # the resume check ran: nothing
+        calls = []
+        monkeypatch.setattr(ps, "_run_script", lambda cmd: calls.append(cmd) or "")
+        state = make_state(phase="BATCH_START", batch=0, total_batches=0, announce_complete=True)
+        next_phase, summary = ps.advance(state)
+        assert next_phase == "DONE"
+        assert "no items to process" in summary
+        # Nothing of batch 1 happened: no counter moved, no active-ids file.
+        assert state["batch"] == 0
+        assert not os.path.exists("tmp/pipeline-active-ids.txt")
+        # The completion marker goes out exactly as REPORT → DONE would have sent it.
+        assert calls == ["python3 scripts/finish.py"]
+
+    def test_no_batches_without_announce_runs_nothing(self, tmp_dir, monkeypatch):
+        write_ids("tmp/pipeline-process-ids.txt", [])  # the resume check ran: nothing
+        calls = []
+        monkeypatch.setattr(ps, "_run_script", lambda cmd: calls.append(cmd) or "")
+        state = make_state(phase="BATCH_START", batch=0, total_batches=0)
+        assert ps.advance(state)[0] == "DONE"
+        assert calls == []
+
+    def test_no_batches_dry_run_is_silent(self, tmp_dir, monkeypatch):
+        write_ids("tmp/pipeline-process-ids.txt", [])  # the resume check ran: nothing
+        calls = []
+        monkeypatch.setattr(ps, "_run_script", lambda cmd: calls.append(cmd) or "")
+        state = make_state(phase="BATCH_START", batch=0, total_batches=0, announce_complete=True)
+        assert ps.advance(state, dry_run=True)[0] == "DONE"
+        assert calls == []
+
+    def test_no_batches_with_a_batch_file_is_a_named_error(self, tmp_dir, capsys, monkeypatch):
+        write_ids("tmp/pipeline-process-ids.txt", [])  # the resume check ran: nothing
+        # init writes total_batches=0 too, and removes the batch files: a batch file present
+        # at BATCH_START was written for this run by an orchestrator that then skipped
+        # `set total_batches=<M>`. Not an idle run — the ids in it would go unprocessed.
+        calls = []
+        monkeypatch.setattr(ps, "_run_script", lambda cmd: calls.append(cmd) or "")
+        write_ids("tmp/pipeline-batch-1-ids.txt", ["RHAIRFE-1"])
+        state = make_state(phase="BATCH_START", batch=0, total_batches=0, announce_complete=True)
+        with pytest.raises(SystemExit) as exc:
+            ps.advance(state)
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "batch file(s) present: tmp/pipeline-batch-1-ids.txt" in err
+        assert "Finish skill step 4" in err
+        assert not os.path.exists("tmp/pipeline-active-ids.txt")
+        assert calls == []
+
+    @pytest.mark.parametrize("value", ["0", 0])
+    def test_no_batches_accepts_the_string_form(self, tmp_dir, value):
+        write_ids("tmp/pipeline-process-ids.txt", [])  # the resume check ran: nothing
+        # `set total_batches=0` stores an int, but a hand-edited state may carry "0".
+        state = make_state(phase="BATCH_START", batch=0, total_batches=value)
+        assert ps.advance(state)[0] == "DONE"
+
+    @pytest.mark.parametrize("value", [None, "", "none", [], -1, "-1", False, True])
+    def test_a_malformed_batch_count_is_not_an_idle_run(self, tmp_dir, value, capsys):
+        # Only exactly zero is idle; a negative, boolean (`set total_batches=false` stores
+        # False, and int(False) == 0) or unparseable count is a batch and fails loudly at
+        # its batch file, never silently as a run that had nothing to do.
+        state = make_state(phase="BATCH_START", batch=0, total_batches=value)
+        with pytest.raises(SystemExit):
+            ps.advance(state)
+        assert "tmp/pipeline-batch-1-ids.txt does not exist" in capsys.readouterr().err
+
+    def test_no_batches_with_pending_ids_is_a_named_error(self, tmp_dir, capsys, monkeypatch):
+        # total_batches=0 while the resume check listed ids: the orchestrator contradicted
+        # itself. Ending the run as idle would leave them silently unprocessed.
+        calls = []
+        monkeypatch.setattr(ps, "_run_script", lambda cmd: calls.append(cmd) or "")
+        write_ids("tmp/pipeline-process-ids.txt", ["RHAIRFE-1", "RHAIRFE-2"])
+        state = make_state(phase="BATCH_START", batch=0, total_batches=0, announce_complete=True)
+        with pytest.raises(SystemExit) as exc:
+            ps.advance(state)
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "total_batches=0" in err
+        assert "tmp/pipeline-process-ids.txt lists 2 id(s) to process" in err
+        assert "Finish skill step 4" in err
+        assert "re-run the resume check" in err
+        assert calls == []  # no completion marker for a run that is not complete
+
+    def test_no_batches_without_the_resume_output_is_a_named_error(
+        self, tmp_dir, capsys, monkeypatch
+    ):
+        # Idle is a positive statement: the resume check wrote an empty file. No file at
+        # all is an orchestrator that skipped step 4 — fail closed (CodeRabbit on #213).
+        calls = []
+        monkeypatch.setattr(ps, "_run_script", lambda cmd: calls.append(cmd) or "")
+        assert not os.path.exists("tmp/pipeline-process-ids.txt")
+        state = make_state(phase="BATCH_START", batch=0, total_batches=0, announce_complete=True)
+        with pytest.raises(SystemExit) as exc:
+            ps.advance(state)
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "tmp/pipeline-process-ids.txt does not exist" in err
+        assert "Run the resume check (skill step 4)" in err
+        assert calls == []
+
+    def test_no_batches_without_the_resume_output_fails_closed_in_dry_run_too(
+        self, tmp_dir, capsys
+    ):
+        state = make_state(phase="BATCH_START", batch=0, total_batches=0)
+        with pytest.raises(SystemExit):
+            ps.advance(state, dry_run=True)
+        assert "does not exist" in capsys.readouterr().err
+
+    def test_missing_batch_file_is_a_named_error(self, tmp_dir, capsys):
+        state = make_state(phase="BATCH_START", batch=0, total_batches=1)
+        with pytest.raises(SystemExit) as exc:
+            ps.advance(state)
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "tmp/pipeline-batch-1-ids.txt" in err
+        assert "total_batches=0" in err
+        # Nothing moved: the orchestrator can write the file and advance again.
+        assert state["batch"] == 0
+        assert not os.path.exists("tmp/pipeline-active-ids.txt")
+
+    def test_missing_batch_file_dry_run_does_not_touch_files(self, tmp_dir):
+        state = make_state(phase="BATCH_START", batch=0, total_batches=1)
+        assert ps.advance(state, dry_run=True)[0] == "FETCH"
+
+    def test_next_action_on_an_idle_run_is_done(self, tmp_dir, monkeypatch, capsys):
+        """What the orchestrator sees: the first next-action of an idle run is `done`."""
+        import yaml
+
+        calls = []
+        monkeypatch.setattr(ps, "_run_script", lambda cmd: calls.append(cmd) or "")
+        ps._save_state(
+            make_state(phase="BATCH_START", batch=0, total_batches=0, announce_complete=True)
+        )
+        write_ids("tmp/pipeline-all-ids.txt", [])
+        write_ids("tmp/pipeline-process-ids.txt", [])
+        ps.cmd_next_action([])
+        out, err = capsys.readouterr()
+        assert yaml.safe_load(out) == {"action": "done", "message": "Pipeline complete"}
+        assert "BATCH_START: no items to process → DONE" in err
+        assert ps._load_state()["phase"] == "DONE"
+        assert calls == ["python3 scripts/finish.py"]
+        # No run report: the results push keys on it, and `latest` must not move for a
+        # run that had nothing to do. (In production the directory itself exists — the
+        # fetch wrote its snapshot there — but the push ignores snapshots.)
+        assert not os.path.exists("artifacts/auto-fix-runs")
 
 
 # ---------- Linear sequences ----------
@@ -1629,6 +1789,30 @@ class TestDispatchLoopE2E:
                 f" phases. Last phases: {phases[-10:]}"
             )
         return phases
+
+    def test_idle_run_ends_at_done_without_a_wave(self, tmp_dir, monkeypatch):
+        """JQL mode, nothing new or changed: BATCH_START → DONE, no wave, no script phase.
+
+        Production 2026-10-04 15:21 and 2026-10-05 03:07: the orchestrator set
+        total_batches=0, next-action crashed on the missing batch-1 file, and the model
+        improvised `set-phase DONE`. The route is now the machine's own.
+        """
+        ps._save_state(make_state(phase="BATCH_START", total_batches=0, announce_complete=True))
+        write_ids("tmp/pipeline-all-ids.txt", [])
+        write_ids("tmp/pipeline-process-ids.txt", [])
+        scripts = []
+        monkeypatch.setattr(ps, "_run_script", lambda cmd: scripts.append(cmd) or "")
+
+        def subprocess_mock(cmd, **kw):
+            pytest.fail(f"an idle run has no script phase to run: {cmd}")
+
+        phases = self._run_loop(monkeypatch, subprocess_mock)
+
+        assert phases == ["BATCH_START"]
+        assert ps._load_state()["phase"] == "DONE"
+        assert scripts == ["python3 scripts/finish.py"]
+        assert not os.path.exists("tmp/pipeline-active-ids.txt")
+        assert not os.path.exists("artifacts/auto-fix-runs")
 
     def test_single_batch_no_splits(self, tmp_dir, monkeypatch):
         """Happy path: 1 batch, revisions needed, no reassess, no splits.
@@ -4787,3 +4971,28 @@ class TestReviseBaseline:
         result = _run_next_action()
         assert result["action"] == "run_script" and result["phase"] == "REASSESS_FIXUP"
         assert "REASSESS_REVISE → REASSESS_FIXUP" in capsys.readouterr().err
+
+
+# ---------- Skill prose: the idle run ----------
+
+
+class TestAutoFixSkillIdleProse:
+    """The route above is only reached if the orchestrator sets total_batches=0 and starts
+    the pipeline instead of improvising; the skill has to say so (it did not, and both idle
+    production runs reasoned their way to `set-phase DONE` from a traceback)."""
+
+    SKILL = os.path.join(
+        os.path.dirname(__file__), "..", ".claude", "skills", "rfe-auto-fix", "SKILL.md"
+    )
+
+    def test_step_4_names_the_zero_id_outcome(self):
+        with open(self.SKILL, encoding="utf-8") as f:
+            text = f.read()
+        step4 = text[text.index("### 4. Resume check + batch") : text.index("## Dispatch Loop")]
+        assert "Zero process IDs from the resume check is a normal outcome" in step4
+        assert "`total_batches=0`" in step4
+        assert "returns `done`" in step4
+        # The machine fails closed without the resume check's output; the prose says so.
+        assert "The resume check must have run" in step4
+        # The instruction precedes the start commands it qualifies.
+        assert step4.index("Zero process IDs") < step4.index("set total_batches=<M>")

@@ -285,6 +285,21 @@ class TestIdsFile:
         assert rc == 0
         assert "TOTAL=1" in out.splitlines()[0]
 
+    def test_empty_ids_file_is_the_zero_line(self, workspace):
+        """The idle auto-fix run's teardown: the fetch selected nothing and wrote an empty
+        tmp/pipeline-all-ids.txt. The summary is the zero line, not a usage error (which
+        was the orchestrator's last command on both idle production runs of 2026-10-04/05)."""
+        ids_file = str(workspace / "ids.txt")
+        open(ids_file, "w").close()
+        out, err, rc = _run(["--counts-only", "--ids-file", ids_file], cwd=str(workspace))
+        assert rc == 0, err
+        assert out.splitlines() == ["TOTAL=0 PASSED=0 FAILED=0 SPLIT=0 ERRORS=0"]
+
+    def test_no_ids_and_no_ids_file_is_still_a_usage_error(self, workspace):
+        _, err, rc = _run(["--counts-only"], cwd=str(workspace))
+        assert rc == 2
+        assert "no IDs provided" in err
+
 
 class TestInitiativeType:
     def test_initiative_reads_from_initiative_dirs(self, workspace):

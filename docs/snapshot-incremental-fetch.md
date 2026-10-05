@@ -113,7 +113,8 @@ python3 scripts/snapshot_fetch.py fetch "<jql>" \
 # 2. Review and process (auto-fix pipeline steps 1-5)
 #    Reads:   tmp/pipeline-all-ids.txt, tmp/pipeline-changed-ids.txt
 #    Writes:  artifacts/rfe-tasks/*, artifacts/rfe-reviews/*
-#             artifacts/auto-fix-runs/<run-id>.yaml (run report)
+#             artifacts/auto-fix-runs/<run-id>.yaml (run report; not written
+#             when the fetch selected nothing — the run ends at BATCH_START)
 
 # 3. Submit to Jira
 #    Reads:   artifacts/rfe-tasks/*, artifacts/rfe-reviews/*
@@ -131,7 +132,7 @@ git push
 | File | Written by | Read by | Lifetime |
 |------|-----------|---------|----------|
 | `artifacts/auto-fix-runs/issue-snapshot-<ts>.yaml` | `snapshot_fetch.py fetch`, updated by `submit.py` | `snapshot_fetch.py fetch` (next run) | Permanent (accumulates) |
-| `artifacts/auto-fix-runs/<YYYYMMDD-HHMMSS>.yaml` | auto-fix pipeline (run report) | `bootstrap_snapshot.py` | Permanent (one per run) |
+| `artifacts/auto-fix-runs/<YYYYMMDD-HHMMSS>.yaml` | auto-fix pipeline (run report) | `bootstrap_snapshot.py` | Permanent (one per run that selected anything; an idle run — zero process ids — writes none, see `pipeline-correctness-reference.md` §2.9) |
 | `tmp/pipeline-all-ids.txt` | `snapshot_fetch.py fetch` | auto-fix pipeline, `check_resume.py` | Current run only |
 | `tmp/pipeline-changed-ids.txt` | `snapshot_fetch.py fetch` | `check_resume.py` | Current run only |
 
@@ -395,6 +396,9 @@ The bootstrap snapshot accounts for:
   zero-count run), bootstrap walks back to the newest run that
   processed anything and reconstructs state as of that run — the
   empty run's newer timestamp would hide edits made between the two.
+  (Since the idle route — zero process ids end the pipeline at
+  `BATCH_START` without a report — such reports come only from older
+  runs or from a run whose every item errored; the walk-back stays.)
   When every report in history is empty, bootstrap snapshots every
   fetched issue marked unprocessed, without requiring `--include-all`:
   the reports were read and state exactly that nothing was processed,
