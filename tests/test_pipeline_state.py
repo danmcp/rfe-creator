@@ -371,6 +371,7 @@ class TestBatchStart:
     # tmp/pipeline-batch-1-ids.txt) and the orchestrator improvised `set-phase DONE`.
 
     def test_no_batches_routes_to_done_and_announces(self, tmp_dir, monkeypatch):
+        write_ids("tmp/pipeline-process-ids.txt", [])  # the resume check ran: nothing
         calls = []
         monkeypatch.setattr(ps, "_run_script", lambda cmd: calls.append(cmd) or "")
         state = make_state(phase="BATCH_START", batch=0, total_batches=0, announce_complete=True)
@@ -384,6 +385,7 @@ class TestBatchStart:
         assert calls == ["python3 scripts/finish.py"]
 
     def test_no_batches_without_announce_runs_nothing(self, tmp_dir, monkeypatch):
+        write_ids("tmp/pipeline-process-ids.txt", [])  # the resume check ran: nothing
         calls = []
         monkeypatch.setattr(ps, "_run_script", lambda cmd: calls.append(cmd) or "")
         state = make_state(phase="BATCH_START", batch=0, total_batches=0)
@@ -391,6 +393,7 @@ class TestBatchStart:
         assert calls == []
 
     def test_no_batches_dry_run_is_silent(self, tmp_dir, monkeypatch):
+        write_ids("tmp/pipeline-process-ids.txt", [])  # the resume check ran: nothing
         calls = []
         monkeypatch.setattr(ps, "_run_script", lambda cmd: calls.append(cmd) or "")
         state = make_state(phase="BATCH_START", batch=0, total_batches=0, announce_complete=True)
@@ -398,6 +401,7 @@ class TestBatchStart:
         assert calls == []
 
     def test_no_batches_with_a_batch_file_is_a_named_error(self, tmp_dir, capsys, monkeypatch):
+        write_ids("tmp/pipeline-process-ids.txt", [])  # the resume check ran: nothing
         # init writes total_batches=0 too, and removes the batch files: a batch file present
         # at BATCH_START was written for this run by an orchestrator that then skipped
         # `set total_batches=<M>`. Not an idle run — the ids in it would go unprocessed.
@@ -416,6 +420,7 @@ class TestBatchStart:
 
     @pytest.mark.parametrize("value", ["0", 0])
     def test_no_batches_accepts_the_string_form(self, tmp_dir, value):
+        write_ids("tmp/pipeline-process-ids.txt", [])  # the resume check ran: nothing
         # `set total_batches=0` stores an int, but a hand-edited state may carry "0".
         state = make_state(phase="BATCH_START", batch=0, total_batches=value)
         assert ps.advance(state)[0] == "DONE"
@@ -447,12 +452,30 @@ class TestBatchStart:
         assert "re-run the resume check" in err
         assert calls == []  # no completion marker for a run that is not complete
 
-    def test_no_batches_with_a_missing_process_ids_file_is_idle(self, tmp_dir):
-        # No resume-check output at all reads as nothing to process (a missing id file is
-        # empty everywhere else in the machine).
+    def test_no_batches_without_the_resume_output_is_a_named_error(
+        self, tmp_dir, capsys, monkeypatch
+    ):
+        # Idle is a positive statement: the resume check wrote an empty file. No file at
+        # all is an orchestrator that skipped step 4 — fail closed (CodeRabbit on #213).
+        calls = []
+        monkeypatch.setattr(ps, "_run_script", lambda cmd: calls.append(cmd) or "")
         assert not os.path.exists("tmp/pipeline-process-ids.txt")
+        state = make_state(phase="BATCH_START", batch=0, total_batches=0, announce_complete=True)
+        with pytest.raises(SystemExit) as exc:
+            ps.advance(state)
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "tmp/pipeline-process-ids.txt does not exist" in err
+        assert "Run the resume check (skill step 4)" in err
+        assert calls == []
+
+    def test_no_batches_without_the_resume_output_fails_closed_in_dry_run_too(
+        self, tmp_dir, capsys
+    ):
         state = make_state(phase="BATCH_START", batch=0, total_batches=0)
-        assert ps.advance(state)[0] == "DONE"
+        with pytest.raises(SystemExit):
+            ps.advance(state, dry_run=True)
+        assert "does not exist" in capsys.readouterr().err
 
     def test_missing_batch_file_is_a_named_error(self, tmp_dir, capsys):
         state = make_state(phase="BATCH_START", batch=0, total_batches=1)
@@ -4966,8 +4989,10 @@ class TestAutoFixSkillIdleProse:
         with open(self.SKILL, encoding="utf-8") as f:
             text = f.read()
         step4 = text[text.index("### 4. Resume check + batch") : text.index("## Dispatch Loop")]
-        assert "Zero process IDs is a normal outcome" in step4
+        assert "Zero process IDs from the resume check is a normal outcome" in step4
         assert "`total_batches=0`" in step4
         assert "returns `done`" in step4
+        # The machine fails closed without the resume check's output; the prose says so.
+        assert "The resume check must have run" in step4
         # The instruction precedes the start commands it qualifies.
         assert step4.index("Zero process IDs") < step4.index("set total_batches=<M>")

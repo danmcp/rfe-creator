@@ -1039,6 +1039,18 @@ def advance(state, dry_run=False):
             # the results push keys on, and a pre_submit-only report under `latest` is
             # the signature of an aborted run, not of a run that had nothing to do. The
             # completion marker still goes out, as REPORT → DONE would have sent it.
+            # Idle is a positive statement, not an absence: the resume check's output
+            # must exist (check_resume.py writes it even when it lists nothing, and init
+            # removes the previous run's). Without it, "nothing to process" is only an
+            # orchestrator that skipped step 4 — fail closed and say what to run.
+            if not os.path.exists(PROCESS_IDS_FILE):
+                print(
+                    f"BATCH_START: total_batches=0 but {PROCESS_IDS_FILE} does not exist."
+                    " Run the resume check (skill step 4) before starting the pipeline;"
+                    " an empty file there is what makes a run idle.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             # total_batches=0 next to ids still to process is the orchestrator
             # contradicting itself; ending the run here would leave them silently
             # unprocessed, with no report to say so. Two signals, because init also
