@@ -424,6 +424,55 @@ class TestScoreAveragePopulations:
         assert report["before_scores_avg"]["what"] == 1.5
         assert report["after_scores_avg"]["what"] == 2.0
 
+    def test_criterion_present_only_in_before_scores_counts_on_neither_side(self, art_dir):
+        # CodeRabbit on #151: a before_scores criterion the current scores omit must not land
+        # in before_totals alone — that is the population mismatch again, per criterion.
+        self._review(art_dir, "RHAIRFE-1001", 10)
+        _write(
+            f"{art_dir}/rfe-tasks/RHAIRFE-1002.md",
+            TASK_TEMPLATE.format(rfe_id="RHAIRFE-1002", extra=""),
+        )
+        _write(
+            f"{art_dir}/rfe-reviews/RHAIRFE-1002-review.md",
+            """---
+rfe_id: RHAIRFE-1002
+score: 8
+pass: true
+recommendation: submit
+feasibility: feasible
+auto_revised: true
+needs_attention: false
+before_score: 6
+scores:
+  what: 2
+  why: 2
+  open_to_how: 2
+  not_a_task: 2
+before_scores:
+  what: 1
+  why: 1
+  open_to_how: 2
+  not_a_task: 2
+  right_sized: 0
+---
+
+## Feedback
+Partial re-score.
+""",
+        )
+
+        report = build_report(
+            ["RHAIRFE-1001", "RHAIRFE-1002"], "20260404-170041", 5, [], [], artifacts_dir=art_dir
+        )
+
+        # right_sized: only RHAIRFE-1001 (2 on both sides) counts; 1002's lone before of 0
+        # is left out instead of pulling the before average down on its own.
+        assert report["before_scores_avg"]["right_sized"] == 2.0
+        assert report["after_scores_avg"]["right_sized"] == 2.0
+        # Criteria scored on both sides keep the real revision: what (1+2)/2 vs (2+2)/2.
+        assert report["before_scores_avg"]["what"] == 1.5
+        assert report["after_scores_avg"]["what"] == 2.0
+
     def test_criterion_averages_cover_the_same_items(self, art_dir):
         for i in range(1, 4):
             self._review(art_dir, f"RHAIRFE-{1000 + i}", 10)
