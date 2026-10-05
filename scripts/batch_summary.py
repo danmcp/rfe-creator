@@ -34,8 +34,11 @@ def main():
     args = parser.parse_args()
 
     ids = resolve_ids(args.ids, args.ids_file)
-    if not ids:
+    if not ids and not args.ids_file:
         parser.error("no IDs provided (pass positionally or via --ids-file)")
+    # An empty --ids-file is a run that selected nothing (the idle auto-fix run: the
+    # fetch wrote an empty tmp/pipeline-all-ids.txt), and its teardown summary is the
+    # zero line, not a usage error for the orchestrator to reason its way out of.
 
     tc = _TYPE_CONFIG[args.type]
     artifacts_dir = os.path.join(os.getcwd(), "artifacts")

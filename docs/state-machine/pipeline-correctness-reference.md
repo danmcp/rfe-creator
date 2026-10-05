@@ -121,7 +121,7 @@ exclusion, and split parent detection. The `rfe_id` pattern constraint causes
 | `AF_RESUME` | Run `check_resume.py` to filter already-processed IDs (see 1.20) | Step 2 |
 | `AF_BATCH_LOOP` | Per-batch: review -> collect (see 1.16) -> split (if needed) -> summary | Dispatch Loop Step 1-2 (`pipeline_state.py next-action` / `wait-for-wave`) |
 | `AF_RETRY` | Scan for errors, cleanup split failures, clear errors, re-run pipeline | Step 4 |
-| `AF_REPORTS` | Generate run report YAML + HTML report | Step 5 |
+| `AF_REPORTS` | Generate run report YAML + HTML report. Not reached by an idle run (zero process ids after `AF_RESUME`): `BATCH_START` with `total_batches` = 0 goes straight to `DONE`, writes no report, and still announces completion (see 2.9) | Step 5 |
 | `AF_SUMMARY` | Final summary + optional announce-complete | Step 6 |
 
 ### 1.7 Split Pipeline Phases (rfe-split pipeline)
@@ -500,6 +500,7 @@ PROCESSED→ABSENT transition — once an issue enters the snapshot, it stays.
 | Self-correct (split) | 1 | `correction_cycle` | `tmp/split-config.yaml` | Before cycle; >= 1 → stop | rfe-split SKILL.md Step 3 |
 | Retry (auto-fix) | 1 | `retry_cycle` | `tmp/pipeline-state.yaml`, `tmp/pipeline-retry-ids.txt` | ERROR_COLLECT: retryable ids → one retry pass, else REPORT | pipeline_state.py ERROR_COLLECT |
 | Batch loop (auto-fix) | ceil(N/batch_size) | `batch` / `total_batches` | `tmp/pipeline-state.yaml`, `tmp/pipeline-batch-N-ids.txt` | BATCH_DONE: batch < total_batches → BATCH_START | pipeline_state.py advance() |
+| Idle run (auto-fix) | 0 | `total_batches` = 0 | `tmp/pipeline-state.yaml` (no batch file) | BATCH_START: no batches → DONE, no REPORT (no run report, so the results push and `latest` are untouched); the completion marker is still announced | pipeline_state.py advance() |
 
 **Counter persistence invariant**: Counters use `set-default` (not `set`) for
 initialization to prevent reset on context compression re-entry.
@@ -563,6 +564,7 @@ stateDiagram-v2
         AF_Bootstrap --> AF_Resume : assess-rfe bootstrapped\n(1 retry on failure)
         AF_Bootstrap --> [*] : double failure\n(pipeline abort)
         AF_Resume --> AF_Batch : check_resume.py filters IDs
+        AF_Resume --> AF_Summary : zero process ids\n(total_batches=0 → DONE, no report)
 
         state "Batch Loop" as AF_Batch {
             BL_Review --> BL_Collect : collect_recommendations.py

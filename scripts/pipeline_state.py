@@ -46,6 +46,8 @@ _TYPES = type_registry.load()
 
 STATE_FILE = "tmp/pipeline-state.yaml"
 WAVE_IDS_FILE = "tmp/pipeline-wave-ids.txt"
+# The resume check's output (skill step 4): the ids this run still has to process.
+PROCESS_IDS_FILE = "tmp/pipeline-process-ids.txt"
 # Epoch of the current wave's launch (AISDLC-33): the barrier hands it to check_review_progress
 # as --since so a review or assess result written before the launch — a previous reassess
 # cycle's late agent — cannot release the wave.
@@ -1000,6 +1002,21 @@ SPLIT_SEQUENCE = [
 ]
 
 
+def _no_batches(state):
+    """True when the run has no batch to start: ``total_batches`` is exactly 0 (the
+    orchestrator found zero process ids and wrote no batch file). Anything else — a count,
+    a negative, a boolean (``set total_batches=false`` stores one), an unparseable value —
+    is treated as a batch, so a malformed value fails loudly at its batch file instead of
+    passing silently as an idle run."""
+    value = state.get("total_batches", 1)
+    if isinstance(value, bool):
+        return False
+    try:
+        return int(value) == 0
+    except (TypeError, ValueError):
+        return False
+
+
 def advance(state, dry_run=False):
     """Compute and apply the next phase transition.
 
@@ -1012,12 +1029,58 @@ def advance(state, dry_run=False):
 
     # --- BATCH_START: reset counters, populate active IDs ---
     if phase == "BATCH_START":
+        if _no_batches(state):
+            # The idle run: in JQL mode the fetch selected nothing (nothing new or changed
+            # since the last run), so the orchestrator wrote no batch file and set
+            # total_batches=0. Starting batch 1 would dead-end at a batch file that does
+            # not exist (FileNotFoundError; production 2026-10-04 15:21 and 2026-10-05
+            # 03:07, where the orchestrator improvised `set-phase DONE` out of the
+            # traceback). Straight to DONE, not through REPORT: the run report is what
+            # the results push keys on, and a pre_submit-only report under `latest` is
+            # the signature of an aborted run, not of a run that had nothing to do. The
+            # completion marker still goes out, as REPORT → DONE would have sent it.
+            # total_batches=0 next to ids still to process is the orchestrator
+            # contradicting itself; ending the run here would leave them silently
+            # unprocessed, with no report to say so. Two signals, because init also
+            # writes total_batches=0: the resume check's output, and any batch file —
+            # init removes the batch files, so one present now was written for this run
+            # by an orchestrator that then skipped `set total_batches=<M>`.
+            pending = _read_ids(PROCESS_IDS_FILE)
+            batch_files = sorted(glob.glob("tmp/pipeline-batch-*-ids.txt"))
+            if pending or batch_files:
+                found = []
+                if pending:
+                    found.append(f"{PROCESS_IDS_FILE} lists {len(pending)} id(s) to process")
+                if batch_files:
+                    found.append(f"batch file(s) present: {', '.join(batch_files)}")
+                print(
+                    f"BATCH_START: total_batches=0 but {'; '.join(found)}. Finish skill"
+                    " step 4 before starting the pipeline: split the process ids into"
+                    " batch files and set total_batches to the batch count (re-run the"
+                    " resume check if that file is stale).",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if not dry_run and state.get("announce_complete"):
+                _run_script("python3 scripts/finish.py")
+            return "DONE", "BATCH_START: no items to process → DONE"
         batch = state.get("batch", 0) + 1
         if not dry_run:
+            batch_file = f"tmp/pipeline-batch-{batch}-ids.txt"
+            if not os.path.exists(batch_file):
+                # total_batches says there is a batch, but its file was never written:
+                # name the file and the two ways out instead of a bare traceback.
+                print(
+                    f"BATCH_START: {batch_file} does not exist (total_batches="
+                    f"{state.get('total_batches', 1)}). Write the batch files"
+                    " (skill step 4), or set total_batches=0 when there is nothing"
+                    " to process.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             state["batch"] = batch
             state["reassess_cycle"] = 0
             state["correction_cycle"] = 0
-            batch_file = f"tmp/pipeline-batch-{batch}-ids.txt"
             _copy_ids(batch_file, "tmp/pipeline-active-ids.txt")
             _sweep_review_state(_read_ids("tmp/pipeline-active-ids.txt"))
         return "FETCH", f"BATCH_START → FETCH: batch={batch}"
@@ -1297,11 +1360,14 @@ def cmd_init(args):
         )
 
     os.makedirs("tmp", exist_ok=True)
-    # Clean stale artifacts from prior runs.
+    # Clean stale artifacts from prior runs. The resume check's output goes too: BATCH_START
+    # reads it to tell an idle run from a forgotten `set total_batches`, and a previous
+    # run's ids in it (interactive use shares tmp/) would misname that run's ids as pending.
     for f in glob.glob("tmp/pipeline-batch-*-ids.txt"):
         os.remove(f)
-    if os.path.exists(DISPATCH_MARKER):
-        os.remove(DISPATCH_MARKER)
+    for f in (DISPATCH_MARKER, PROCESS_IDS_FILE):
+        if os.path.exists(f):
+            os.remove(f)
     state = {
         "phase": "INIT",
         "type": opts.type,

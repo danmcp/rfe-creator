@@ -93,6 +93,8 @@ python3 scripts/state.py write-ids tmp/pipeline-batch-1-ids.txt <batch_1_IDs>
 python3 scripts/state.py write-ids tmp/pipeline-batch-2-ids.txt <batch_2_IDs>
 ```
 
+Zero process IDs is a normal outcome (JQL mode: nothing new or changed since the last run; explicit IDs: every one already processed), not an error: write no batch files and start the pipeline below with `total_batches=0`. The first `next-action` then returns `done` (no run report — there was no run); go to teardown.
+
 Start the pipeline:
 
 ```bash
